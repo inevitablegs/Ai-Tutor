@@ -3,7 +3,7 @@ import re
 import json
 import hashlib
 import logging
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from yt_dlp import YoutubeDL
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
@@ -14,15 +14,28 @@ from langchain_community.vectorstores import FAISS
 import google.generativeai as genai
 import requests
 from youtube_transcript_api.proxies import WebshareProxyConfig
+from datetime import timedelta
 
 # Disable yt-dlp logger to suppress ffmpeg warnings
 logging.getLogger('yt_dlp').setLevel(logging.ERROR)
 
 class YouTubeProcessor:
     def __init__(self):
+        # Load environment variables
+        load_dotenv()
+        
+        # Proxy configuration
         self.webshare_username = os.getenv("WEBSHARE_USERNAME")
         self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
-        self.ytt_api = YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(proxy_username=self.webshare_username,proxy_password=self.webshare_password,))
+        self.proxy_config = WebshareProxyConfig(
+            proxy_username=self.webshare_username,
+            proxy_password=self.webshare_password
+        ) if self.webshare_username and self.webshare_password else None
+        
+        # Initialize YouTubeTranscriptApi with proxy
+        self.ytt_api = YouTubeTranscriptApi(proxy_config=self.proxy_config)
+        
+        # Other configurations
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_model = "deepseek-r1-distill-llama-70b"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -43,13 +56,7 @@ class YouTubeProcessor:
 
     @staticmethod
     def extract_video_id(video_url: str) -> str:
-        """Extract YouTube video ID from URL.
-        Supports:
-        - https://www.youtube.com/watch?v=k4oWqYT6tjk
-        - https://youtu.be/k4oWqYT6tjk
-        - https://youtu.be/k4oWqYT6tjk?si=wdVFChAiQdIawmR1
-        - and similar variations
-        """
+        """Extract YouTube video ID from URL"""
         # Handle youtu.be URLs
         if "youtu.be/" in video_url:
             return video_url.split("youtu.be/")[1].split("?")[0].split("/")[0]
@@ -94,7 +101,23 @@ class YouTubeProcessor:
         video_id = YouTubeProcessor.extract_video_id(video_url)
         return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
 
-    def get_transcript(self, video_id: str) -> Union[List[Dict], None]:
+    @staticmethod
+    def format_seconds_to_srt(seconds: float) -> str:
+        """Convert seconds to SRT time format (HH:MM:SS,mmm)"""
+        td = timedelta(seconds=seconds)
+        hours, remainder = divmod(td.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        milliseconds = td.microseconds // 1000
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+
+    @staticmethod
+    def srt_time_to_seconds(time_str: str) -> float:
+        """Convert SRT time format (HH:MM:SS,mmm) to seconds"""
+        hh_mm_ss, mmm = time_str.split(',')
+        hh, mm, ss = hh_mm_ss.split(':')
+        return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
+
+    def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
         """Get transcript with preference for English, then Hindi (including auto-generated), then None"""
         # First try to get English transcript (manual or auto-generated)
         try:
@@ -113,8 +136,8 @@ class YouTubeProcessor:
         except NoTranscriptFound:
             # If no manual Hindi transcript, try auto-generated Hindi
             try:
-                transcript_list = self.ytt_api.list_transcripts(video_id)
-                for t in transcript:
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                for t in transcript_list:
                     if t.language_code == 'hi' and t.is_generated:
                         print("Found auto-generated Hindi transcript")
                         return t.fetch(), 'hi'
@@ -183,7 +206,7 @@ class YouTubeProcessor:
                     "video_hash": self.generate_text_hash(full_text),
                     "video_title": video_info.get('title', 'Unknown'),
                     "video_id": video_id,
-                    "language": transcript_lang  # Add language metadata
+                    "language": transcript_lang
                 }
             ))
         
@@ -198,6 +221,7 @@ class YouTubeProcessor:
         
         # Save to specified path
         store_path = os.path.join("vectorstores", store_name)
+        os.makedirs(os.path.dirname(store_path), exist_ok=True)
         vectorstore.save_local(store_path)
         print(f"Vector store saved at {store_path}")
         return vectorstore
@@ -234,15 +258,17 @@ class YouTubeProcessor:
             ]
         }
 
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions", 
-            json=payload, 
-            headers=headers
-        )
-        if response.status_code != 200:
-            raise Exception(f"Groq LLM error: {response.status_code} - {response.text}")
-        
-        return response.json()["choices"][0]["message"]["content"]
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions", 
+                json=payload, 
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise Exception(f"Groq LLM error: {str(e)}")
 
     def expand_query_with_llm(self, query: str, language: str = 'en') -> str:
         """Expand short queries for better semantic search"""
@@ -265,14 +291,14 @@ Expanded Version:""",
         return self.call_groq_llm(prompt, language)
 
     def answer_question(self, vectorstore: FAISS, question: str) -> Dict:
-        """Answer question using vector store context. Always returns answer in English."""
-        # Detect language of the question (but we'll always answer in English)
+        """Answer question using vector store context"""
+        # Detect language of the question
         question_lang = 'hi' if any('\u0900' <= char <= '\u097F' for char in question) else 'en'
         
-        # Step 1: Expand the query (can be in original language)
+        # Expand the query
         expanded_query = self.expand_query_with_llm(question, question_lang)
         
-        # Step 2: Semantic search on expanded query
+        # Semantic search
         similar_docs = vectorstore.max_marginal_relevance_search(
             query=expanded_query, 
             k=5, 
@@ -286,11 +312,10 @@ Expanded Version:""",
                 "thinking_process": ""
             }
 
-        # Prepare context for LLM (can be in any language)
+        # Prepare context
         full_context = "\n\n".join([doc.page_content for doc in similar_docs])
-        context_lang = similar_docs[0].metadata.get('language', 'en')
-
-        # Generate answer - always in English regardless of context language
+        
+        # Generate answer (always in English)
         prompt_template = """Analyze the question and provide:
 1. Your thinking process (marked with <thinking> tags)
 2. A detailed answer in English based strictly on the context
@@ -308,15 +333,12 @@ Format your response as:
 <thinking>Your analytical process here</thinking>
 <answer>Your structured answer in English here</answer>"""
         
-        prompt = prompt_template.format(
-            question=question,
-            context=full_context
+        llm_response = self.call_groq_llm(
+            prompt_template.format(question=question, context=full_context),
+            'en'
         )
         
-        # Force English response by setting language to 'en'
-        llm_response = self.call_groq_llm(prompt, 'en')
-        
-        # Extract thinking and answer parts
+        # Extract response parts
         thinking_process = ""
         answer = ""
         try:
@@ -344,8 +366,8 @@ Format your response as:
                 } for doc in similar_docs
             ],
             "context_hash": self.generate_text_hash(full_context),
-            "language": "en"  # Always return English as the response language
-    }
+            "language": "en"
+        }
 
     def process_video(self, video_url: str, store_name: str) -> Dict:
         """Full processing pipeline for a YouTube video"""
@@ -359,3 +381,7 @@ Format your response as:
             "chunks": chunks,
             "store_name": store_name
         }
+
+# Load environment variables at module level
+from dotenv import load_dotenv
+load_dotenv()
