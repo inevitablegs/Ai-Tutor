@@ -112,10 +112,12 @@ class YouTubeProcessor:
     def get_youtube_video_info(self, video_url: str) -> Dict:
         """Get YouTube video metadata using yt-dlp with retry logic"""
         ydl_opts = {
-            'quiet': True,
-            'skip_download': True,
-            'extract_flat': True,
-        }
+    'quiet': True,
+    'skip_download': True,
+    'extract_flat': True,
+    'cookiefile': 'www.youtube.com_cookies.txt',  # <-- Add this
+}
+
         
         try:
             with YoutubeDL(ydl_opts) as ydl:
