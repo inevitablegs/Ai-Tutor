@@ -3,18 +3,22 @@ import re
 import json
 import hashlib
 import logging
+import requests
 from typing import List, Dict, Optional, Union, Tuple
+from datetime import timedelta
 from yt_dlp import YoutubeDL
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import WebshareProxyConfig
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 import google.generativeai as genai
-import requests
-from youtube_transcript_api.proxies import WebshareProxyConfig
-from datetime import timedelta
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+import random
+import time
 
 # Disable yt-dlp logger to suppress ffmpeg warnings
 logging.getLogger('yt_dlp').setLevel(logging.ERROR)
@@ -24,23 +28,51 @@ class YouTubeProcessor:
         # Load environment variables
         load_dotenv()
         
-        # Proxy configuration
-        self.webshare_username = os.getenv("WEBSHARE_USERNAME")
-        self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
-        self.proxy_config = WebshareProxyConfig(
-            proxy_username=self.webshare_username,
-            proxy_password=self.webshare_password
-        ) if self.webshare_username and self.webshare_password else None
+        # Initialize configurations
+        self._init_configurations()
         
-        # Initialize YouTubeTranscriptApi with proxy
-        self.ytt_api = YouTubeTranscriptApi(proxy_config=self.proxy_config)
-        
-        # Other configurations
+        # Initialize proxy settings
+        self._init_proxies()
+
+    def _init_configurations(self):
+        """Initialize all non-proxy related configurations"""
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_model = "deepseek-r1-distill-llama-70b"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
         self.embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         self.supported_languages = ['en', 'hi']  # English and Hindi (English first)
+        self.max_retries = 3
+        self.initial_delay = 1
+
+    def _init_proxies(self):
+        """Initialize all proxy-related configurations"""
+        self.webshare_username = os.getenv("WEBSHARE_USERNAME")
+        self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
+        self.has_proxies = self.webshare_username and self.webshare_password
+        
+        # Configuration for requests library
+        self.requests_proxies = {
+            'http': f'http://{self.webshare_username}:{self.webshare_password}@p.webshare.io:80',
+            'https': f'http://{self.webshare_username}:{self.webshare_password}@p.webshare.io:80',
+        } if self.has_proxies else None
+        
+        # Configuration for YouTubeTranscriptApi
+        self.ytt_proxy_config = WebshareProxyConfig(
+            proxy_username=self.webshare_username,
+            proxy_password=self.webshare_password
+        ) if self.has_proxies else None
+        
+        # Headers to mimic browser
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Connection': 'keep-alive',
+        }
+        
+        # Initialize YouTubeTranscriptApi with correct proxy config
+        self.ytt_api = YouTubeTranscriptApi(proxy_config=self.ytt_proxy_config)
 
     @staticmethod
     def clean_text(text: str) -> str:
@@ -57,25 +89,27 @@ class YouTubeProcessor:
     @staticmethod
     def extract_video_id(video_url: str) -> str:
         """Extract YouTube video ID from URL"""
-        # Handle youtu.be URLs
-        if "youtu.be/" in video_url:
-            return video_url.split("youtu.be/")[1].split("?")[0].split("/")[0]
+        patterns = [
+            r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|youtu\.be\/)([^"&?\/\s]{11})',
+            r'youtube\.com\/watch\?v=([^"&?\/\s]{11})',
+            r'youtu\.be\/([^"&?\/\s]{11})'
+        ]
         
-        # Handle standard YouTube URLs
-        if "v=" in video_url:
-            return video_url.split("v=")[1].split("&")[0]
+        for pattern in patterns:
+            match = re.search(pattern, video_url)
+            if match:
+                return match.group(1)
         
-        # If no pattern matches, return the original string (assuming it's just the ID)
-        return video_url
+        return video_url  # Return as-is if no pattern matches (might already be an ID)
 
-    @staticmethod
-    def get_youtube_video_info(video_url: str) -> Dict:
-        """Get YouTube video metadata using yt-dlp"""
+    def get_youtube_video_info(self, video_url: str) -> Dict:
+        """Get YouTube video metadata using yt-dlp with retry logic"""
         ydl_opts = {
             'quiet': True,
             'skip_download': True,
             'extract_flat': True,
         }
+        
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
@@ -95,46 +129,50 @@ class YouTubeProcessor:
                 "thumbnail": ""
             }
 
-    @staticmethod
-    def format_timestamp_url(video_url: str, timestamp: float) -> str:
-        """Format URL with timestamp parameter"""
-        video_id = YouTubeProcessor.extract_video_id(video_url)
-        return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
-
-    @staticmethod
-    def format_seconds_to_srt(seconds: float) -> str:
-        """Convert seconds to SRT time format (HH:MM:SS,mmm)"""
-        td = timedelta(seconds=seconds)
-        hours, remainder = divmod(td.seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        milliseconds = td.microseconds // 1000
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-
-    @staticmethod
-    def srt_time_to_seconds(time_str: str) -> float:
-        """Convert SRT time format (HH:MM:SS,mmm) to seconds"""
-        hh_mm_ss, mmm = time_str.split(',')
-        hh, mm, ss = hh_mm_ss.split(':')
-        return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
+    def _make_request_with_retry(self, url, max_retries=None, initial_delay=None):
+        """Helper method to make requests with retry logic"""
+        max_retries = max_retries or self.max_retries
+        initial_delay = initial_delay or self.initial_delay
+        
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    url,
+                    proxies=self.requests_proxies,
+                    headers=self.headers,
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    return response
+                elif response.status_code == 429:  # Too Many Requests
+                    delay *= (2 + random.random())  # Exponential backoff with jitter
+                    time.sleep(delay)
+                else:
+                    return None
+            except Exception as e:
+                print(f"Request failed (attempt {attempt + 1}): {str(e)}")
+                delay *= (2 + random.random())
+                time.sleep(delay)
+        
+        return None
 
     def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
-        """Get transcript with preference for English, then Hindi (including auto-generated), then None"""
-        # First try to get English transcript (manual or auto-generated)
+        """Get transcript with multiple fallback strategies"""
+        # First try standard API with proxies
         try:
             transcript = self.ytt_api.get_transcript(video_id, languages=['en'])
-            print("Found English transcript")
+            print("Found English transcript via API")
             return transcript, 'en'
         except Exception as e:
-            print(f"Couldn't find English transcript: {str(e)}")
+            print(f"API failed for English transcript: {str(e)}")
         
-        # If English not available, try Hindi (including auto-generated)
+        # Fallback 1: Try Hindi transcript
         try:
-            # First try manual Hindi transcript
             transcript = self.ytt_api.get_transcript(video_id, languages=['hi'])
-            print("Found manual Hindi transcript")
+            print("Found Hindi transcript via API")
             return transcript, 'hi'
         except NoTranscriptFound:
-            # If no manual Hindi transcript, try auto-generated Hindi
             try:
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
                 for t in transcript_list:
@@ -142,13 +180,64 @@ class YouTubeProcessor:
                         print("Found auto-generated Hindi transcript")
                         return t.fetch(), 'hi'
             except Exception as e:
-                print(f"Couldn't find Hindi transcript (manual or auto-generated): {str(e)}")
+                print(f"Couldn't find Hindi transcript: {str(e)}")
         except Exception as e:
-            print(f"Error while fetching Hindi transcript: {str(e)}")
+            print(f"Error fetching Hindi transcript: {str(e)}")
         
-        # If neither is available, return None
+        # Fallback 2: Try scraping
+        scraped_transcript = self._scrape_transcript(video_id)
+        if scraped_transcript:
+            return scraped_transcript, 'en'
+        
         return None, None
 
+    def _scrape_transcript(self, video_id: str) -> Optional[List[Dict]]:
+        """Fallback method to scrape transcript if API fails"""
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        response = self._make_request_with_retry(url)
+        if not response or response.status_code != 200:
+            return None
+        
+        try:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            script_tags = soup.find_all('script')
+            
+            # Look for transcript data in script tags
+            for script in script_tags:
+                if 'captionTracks' in str(script):
+                    # This is a simplified parser - actual implementation may need adjustment
+                    data = json.loads(script.string.split('ytInitialPlayerResponse = ')[1].split(';')[0])
+                    caption_tracks = data.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+                    
+                    for track in caption_tracks:
+                        if track.get('languageCode') in self.supported_languages:
+                            transcript_url = track.get('baseUrl')
+                            if transcript_url:
+                                transcript_response = self._make_request_with_retry(f"{transcript_url}&fmt=json3")
+                                if transcript_response:
+                                    return self._parse_scraped_transcript(transcript_response.json())
+        except Exception as e:
+            print(f"Scraping failed: {str(e)}")
+        
+        return None
+
+    def _parse_scraped_transcript(self, transcript_data: Dict) -> List[Dict]:
+        """Parse scraped transcript data into standard format"""
+        events = transcript_data.get('events', [])
+        transcript = []
+        
+        for event in events:
+            if 'segs' in event:
+                for seg in event['segs']:
+                    if seg.get('utf8'):
+                        transcript.append({
+                            'text': seg['utf8'],
+                            'start': event.get('tStartMs', 0) / 1000,
+                            'duration': event.get('dDurationMs', 3000) / 1000
+                        })
+        
+        return transcript
     def load_youtube_transcript(self, video_url: str) -> List[Document]:
         """Load and process YouTube transcript into chunks with timestamps"""
         video_id = self.extract_video_id(video_url)
@@ -225,7 +314,7 @@ class YouTubeProcessor:
         vectorstore.save_local(store_path)
         print(f"Vector store saved at {store_path}")
         return vectorstore
-
+    
     def load_vector_store(self, store_name: str) -> FAISS:
         """Load existing vector store from disk"""
         store_path = os.path.join("vectorstores", store_name)
@@ -382,6 +471,5 @@ Format your response as:
             "store_name": store_name
         }
 
-# Load environment variables at module level
 from dotenv import load_dotenv
 load_dotenv()
