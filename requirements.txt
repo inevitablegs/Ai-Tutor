@@ -21,3 +21,4 @@ pypdf==5.1.0
 google-api-python-client==2.163.0
 django-cloudinary-storage
 cloudinary==1.44.1
+beautifulsoup4
