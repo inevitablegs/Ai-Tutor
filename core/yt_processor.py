@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import random
 import time
+from http.cookiejar import MozillaCookieJar
 
 # Disable yt-dlp logger to suppress ffmpeg warnings
 logging.getLogger('yt_dlp').setLevel(logging.ERROR)
@@ -107,7 +108,13 @@ class YouTubeProcessor:
         """Format URL with timestamp parameter"""
         video_id = YouTubeProcessor.extract_video_id(video_url)
         return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
-    
+
+    def _load_cookies_header(self, cookiefile_path: str = "www.youtube.com_cookies.txt") -> str:
+        """Load cookies.txt into a Cookie header"""
+        cj = MozillaCookieJar()
+        cj.load(cookiefile_path, ignore_discard=True, ignore_expires=True)
+        return "; ".join([f"{cookie.name}={cookie.value}" for cookie in cj])
+        
 
     def get_youtube_video_info(self, video_url: str) -> Dict:
         """Get YouTube video metadata using yt-dlp with retry logic"""
@@ -146,12 +153,16 @@ class YouTubeProcessor:
         delay = initial_delay
         for attempt in range(max_retries):
             try:
+                cookies_header = self._load_cookies_header()
+                headers_with_cookies = {**self.headers, "Cookie": cookies_header}
+                
                 response = requests.get(
                     url,
                     proxies=self.requests_proxies,
-                    headers=self.headers,
+                    headers=headers_with_cookies,
                     timeout=30
                 )
+
                 if response.status_code == 200:
                     return response
                 elif response.status_code == 429:  # Too Many Requests
