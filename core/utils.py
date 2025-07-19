@@ -8,6 +8,10 @@ from youtube_search import YoutubeSearch
 from tavily import TavilyClient
 import google.generativeai as genai
 
+
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from .yt_processor import YouTubeProcessor
+
 # Initialize Gemini and Tavily
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -385,10 +389,7 @@ def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tup
         return None, None
 
 
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
-from datetime import timedelta
-from .yt_processor import YouTubeProcessor
+
 
 def format_seconds_to_srt(seconds: float) -> str:
     td = timedelta(seconds=seconds)
