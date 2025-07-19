@@ -13,12 +13,16 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 import google.generativeai as genai
 import requests
+from youtube_transcript_api.proxies import WebshareProxyConfig
 
 # Disable yt-dlp logger to suppress ffmpeg warnings
 logging.getLogger('yt_dlp').setLevel(logging.ERROR)
 
 class YouTubeProcessor:
     def __init__(self):
+        self.webshare_username = os.getenv("WEBSHARE_USERNAME")
+        self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
+        self.ytt_api = YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(proxy_username=self.webshare_username,proxy_password=self.webshare_password,))
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_model = "deepseek-r1-distill-llama-70b"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -94,7 +98,7 @@ class YouTubeProcessor:
         """Get transcript with preference for English, then Hindi (including auto-generated), then None"""
         # First try to get English transcript (manual or auto-generated)
         try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+            transcript = self.ytt_api.get_transcript(video_id, languages=['en'])
             print("Found English transcript")
             return transcript, 'en'
         except Exception as e:
@@ -103,13 +107,13 @@ class YouTubeProcessor:
         # If English not available, try Hindi (including auto-generated)
         try:
             # First try manual Hindi transcript
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['hi'])
+            transcript = self.ytt_api.get_transcript(video_id, languages=['hi'])
             print("Found manual Hindi transcript")
             return transcript, 'hi'
         except NoTranscriptFound:
             # If no manual Hindi transcript, try auto-generated Hindi
             try:
-                transcript = YouTubeTranscriptApi.list_transcripts(video_id)
+                transcript_list = self.ytt_api.list_transcripts(video_id)
                 for t in transcript:
                     if t.language_code == 'hi' and t.is_generated:
                         print("Found auto-generated Hindi transcript")
