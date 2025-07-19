@@ -90,10 +90,10 @@ class YouTubeProcessor:
     def extract_video_id(video_url: str) -> str:
         """Extract YouTube video ID from URL"""
         patterns = [
-            r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|youtu\.be\/)([^"&?\/\s]{11})',
-            r'youtube\.com\/watch\?v=([^"&?\/\s]{11})',
-            r'youtu\.be\/([^"&?\/\s]{11})'
-        ]
+    r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|youtu\.be\/)([^"&?\/\s]{11}))',
+    r'youtube\.com\/watch\?v=([^"&?\/\s]{11})',
+    r'youtu\.be\/([^"&?\/\s]{11})'
+]
         
         for pattern in patterns:
             match = re.search(pattern, video_url)
@@ -101,6 +101,13 @@ class YouTubeProcessor:
                 return match.group(1)
         
         return video_url  # Return as-is if no pattern matches (might already be an ID)
+    
+    @staticmethod
+    def format_timestamp_url(video_url: str, timestamp: float) -> str:
+        """Format URL with timestamp parameter"""
+        video_id = YouTubeProcessor.extract_video_id(video_url)
+        return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
+    
 
     def get_youtube_video_info(self, video_url: str) -> Dict:
         """Get YouTube video metadata using yt-dlp with retry logic"""
