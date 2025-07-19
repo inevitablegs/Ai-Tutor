@@ -3,14 +3,14 @@ from typing import List, Dict, TypedDict
 import time
 from datetime import timedelta
 from dotenv import load_dotenv
-from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_search import YoutubeSearch
 from tavily import TavilyClient
 import google.generativeai as genai
-
-
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from .yt_processor import YouTubeProcessor
+import re 
+
+# Initialize YouTubeProcessor (which includes proxy setup)
+yt_processor = YouTubeProcessor()
 
 # Initialize Gemini and Tavily
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -168,95 +168,22 @@ def display_single_chapter_resources(chapter: ChapterOutput):
         print(f"  URL: {resource['url']}")
         print(f"  Source: {resource['source']}")
 
-if __name__ == "__main__":
-    print("Study Resource Generator")
-    topic = input("Enter your study topic: ").strip() or "Python Programming"
-    grade = input("Enter grade/standard level: ").strip() or "high school"
-    
-    try:
-        # First generate all chapter names
-        chapter_names = generate_chapter_names(topic, grade)
-        display_chapters(chapter_names)
-        
-        # Ask user which chapter they want resources for
-        while True:
-            try:
-                chapter_num = input("\nEnter chapter number to generate resources for (1-10) or 'q' to quit: ").strip()
-                if chapter_num.lower() == 'q':
-                    break
-                
-                chapter_num = int(chapter_num)
-                if 1 <= chapter_num <= 10:
-                    selected_chapter = chapter_names[chapter_num - 1]
-                    print(f"\nGenerating resources for Chapter {chapter_num}: {selected_chapter}...")
-                    
-                    # Generate resources only for the selected chapter
-                    videos = get_video_resources(topic, grade, selected_chapter)
-                    websites = get_web_resources(topic, grade, selected_chapter)
-                    
-                    chapter_output = {
-                        "name": selected_chapter,
-                        "youtube_videos": videos,
-                        "web_resources": websites
-                    }
-                    
-                    display_single_chapter_resources(chapter_output)
-                else:
-                    print("Please enter a number between 1 and 10.")
-            except ValueError:
-                print("Please enter a valid number or 'q' to quit.")
-                
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-
-
-
-
-
-# Load environment variables
-load_dotenv()
-
-# Initialize Gemini
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel('gemini-2.5-flash')
-
 def get_video_id(video_url: str) -> str:
-    """Extract video ID from a YouTube URL or dict"""
-    # Handle accidental dict input
-    if isinstance(video_url, dict):
-        video_url = video_url.get("url", "")
-
-    if "v=" in video_url:
-        return video_url.split("v=")[1].split("&")[0]
-    elif "youtu.be/" in video_url:
-        return video_url.split("youtu.be/")[1].split("?")[0]
-    else:
-        return video_url.strip()  # Fallback: assume already ID
-
+    """Extract video ID from a YouTube URL using YouTubeProcessor"""
+    return yt_processor.extract_video_id(video_url)
 
 def download_youtube_transcript(video_id: str, languages: list = ['en']) -> tuple:
-    """Download transcript and return as formatted text with timestamps"""
+    """Download transcript using YouTubeProcessor with proxy support"""
     try:
-        # Try to get transcript in each language until successful
-        transcript_list = None
-        for lang in languages:
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                print(f"Found transcript in language: {lang}")
-                break
-            except:
-                continue
-        
-        if not transcript_list:
-            raise Exception("No transcript available for the video in the specified languages")
-        
+        chunks = yt_processor.load_youtube_transcript(f"https://www.youtube.com/watch?v={video_id}")
+        if not chunks:
+            return None, None
+            
         # Format the transcript with timestamps
         formatted_transcript = []
-        for entry in transcript_list:
-            start_time = entry['start']
-            text = entry['text']
+        for chunk in chunks:
+            start_time = chunk.metadata["timestamp"]["start"]
+            text = chunk.page_content
             formatted_transcript.append(
                 f"[{format_seconds_to_srt(start_time)}] {text}"
             )
@@ -275,7 +202,7 @@ def format_seconds_to_srt(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 def parse_transcript(transcript_text: str) -> list:
-    """Parse transcript text into a list of chunks with text and timestamps"""
+    """Parse transcript text into a list of chunks with timestamps"""
     chunks = []
     lines = transcript_text.split('\n')
     
@@ -299,9 +226,6 @@ def srt_time_to_seconds(time_str: str) -> float:
     hh_mm_ss, mmm = time_str.split(',')
     hh, mm, ss = hh_mm_ss.split(':')
     return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
-
-import re
-import json
 
 def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tuple:
     """Generate MCQ questions from transcript chunks using Gemini with YouTube links"""
@@ -388,81 +312,69 @@ def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tup
         print(f"Error generating MCQs: {str(e)}")
         return None, None
 
-
-
-
-def format_seconds_to_srt(seconds: float) -> str:
-    td = timedelta(seconds=seconds)
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    milliseconds = td.microseconds // 1000
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-
-def srt_time_to_seconds(time_str: str) -> float:
-    hh_mm_ss, mmm = time_str.split(',')
-    hh, mm, ss = hh_mm_ss.split(':')
-    return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
-
-def parse_transcript(transcript_text: str) -> list:
-    chunks = []
-    lines = transcript_text.split('\n')
-    for line in lines:
-        if line.startswith('[') and ']' in line:
-            time_part, text = line.split(']', 1)
-            time_str = time_part[1:]
-            start_time = srt_time_to_seconds(time_str)
-            chunks.append({
-                'text': text.strip(),
-                'start': start_time,
-                'start_seconds': start_time,
-                'time_range': f"{time_str} --> {time_str}"
-            })
-    return chunks
-
 def get_transcript_chunks_from_youtube(video_url: str, languages: list = ['en', 'hi']) -> list:
+    """Get transcript chunks using YouTubeProcessor with proxy support"""
     try:
-        yt = YouTubeProcessor()
-        video_id = yt.extract_video_id(video_url)
+        video_id = yt_processor.extract_video_id(video_url)
+        chunks = yt_processor.load_youtube_transcript(video_url)
         
-        # First try manual transcript
-        transcript = None
-        for lang in languages:
-            try:
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                print(f"[DEBUG] Found manual transcript in {lang}")
-                break
-            except Exception:
-                continue
-
-        # If not found, fallback to auto
-        if not transcript:
-            try:
-                all_transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                for t in all_transcripts:
-                    if t.is_generated and t.language_code in languages:
-                        print(f"[DEBUG] Found auto-generated transcript in {t.language_code}")
-                        transcript = t.fetch()
-                        break
-            except Exception as e:
-                print(f"[ERROR] Transcript list failed: {e}")
-
-        if not transcript:
-            print(f"[ERROR] No transcript found for {video_id}")
-            return []
-
-        # Format transcript
-        formatted_transcript = []
-        for entry in transcript:
-            start = entry['start']
-            text = entry['text']
-            formatted_transcript.append(f"[{format_seconds_to_srt(start)}] {text}")
-
-        full_text = "\n".join(formatted_transcript)
-        return parse_transcript(full_text)
-
-    except (NoTranscriptFound, TranscriptsDisabled) as e:
-        print(f"[ERROR] Transcript not available: {e}")
-        return []
+        # Format transcript as list of dicts similar to the original format
+        formatted_chunks = []
+        for chunk in chunks:
+            formatted_chunks.append({
+                'text': chunk.page_content,
+                'start': chunk.metadata['timestamp']['start'],
+                'start_seconds': chunk.metadata['timestamp']['start'],
+                'time_range': format_seconds_to_srt(chunk.metadata['timestamp']['start']) + 
+                              " --> " + 
+                              format_seconds_to_srt(chunk.metadata['timestamp']['end'])
+            })
+        
+        return formatted_chunks
     except Exception as e:
-        print(f"[ERROR] Unexpected error: {str(e)}")
+        print(f"[ERROR] Failed to get transcript chunks: {str(e)}")
         return []
+
+if __name__ == "__main__":
+    print("Study Resource Generator")
+    topic = input("Enter your study topic: ").strip() or "Python Programming"
+    grade = input("Enter grade/standard level: ").strip() or "high school"
+    
+    try:
+        # First generate all chapter names
+        chapter_names = generate_chapter_names(topic, grade)
+        display_chapters(chapter_names)
+        
+        # Ask user which chapter they want resources for
+        while True:
+            try:
+                chapter_num = input("\nEnter chapter number to generate resources for (1-10) or 'q' to quit: ").strip()
+                if chapter_num.lower() == 'q':
+                    break
+                
+                chapter_num = int(chapter_num)
+                if 1 <= chapter_num <= 10:
+                    selected_chapter = chapter_names[chapter_num - 1]
+                    print(f"\nGenerating resources for Chapter {chapter_num}: {selected_chapter}...")
+                    
+                    # Generate resources only for the selected chapter
+                    videos = get_video_resources(topic, grade, selected_chapter)
+                    websites = get_web_resources(topic, grade, selected_chapter)
+                    
+                    chapter_output = {
+                        "name": selected_chapter,
+                        "youtube_videos": videos,
+                        "web_resources": websites
+                    }
+                    
+                    display_single_chapter_resources(chapter_output)
+                else:
+                    print("Please enter a number between 1 and 10.")
+            except ValueError:
+                print("Please enter a valid number or 'q' to quit.")
+                
+    except Exception as e:
+        print(f"Error: {e}")
+
+# Load environment variables
+load_dotenv()
