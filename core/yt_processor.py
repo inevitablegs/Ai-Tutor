@@ -109,7 +109,7 @@ class YouTubeProcessor:
         video_id = YouTubeProcessor.extract_video_id(video_url)
         return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
 
-    def _load_cookies_header(self, cookiefile_path: str = "www.youtube.com_cookies.txt") -> str:
+    def _load_cookies_header(self, cookiefile_path: str = "./www.youtube.com_cookies.txt") -> str:
         """Load cookies.txt into a Cookie header"""
         cj = MozillaCookieJar()
         cj.load(cookiefile_path, ignore_discard=True, ignore_expires=True)
