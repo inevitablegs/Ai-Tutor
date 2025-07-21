@@ -6,7 +6,6 @@ import logging
 import requests
 from typing import List, Dict, Optional, Union, Tuple
 from datetime import timedelta
-from yt_dlp import YoutubeDL
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.proxies import WebshareProxyConfig
@@ -19,9 +18,12 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import random
 import time
+import os
+import requests
+from urllib.parse import urlparse, parse_qs
 
 # Disable yt-dlp logger to suppress ffmpeg warnings
-logging.getLogger('yt_dlp').setLevel(logging.ERROR)
+# logging.getLogger('yt_dlp').setLevel(logging.ERROR)
 
 class YouTubeProcessor:
     def __init__(self):
@@ -109,32 +111,67 @@ class YouTubeProcessor:
         return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
     
 
-    def get_youtube_video_info(self, video_url: str) -> Dict:
-        """Get YouTube video metadata using yt-dlp with retry logic"""
-        ydl_opts = {
-            'quiet': True,
-            'skip_download': True,
-            'extract_flat': True,
-        }
-        
-        try:
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                return {
-                    "title": info.get('title', ''),
-                    "description": info.get('description', ''),
-                    "thumbnail": info.get('thumbnail', ''),
-                    "duration": info.get('duration', 0),
-                    "view_count": info.get('view_count', 0),
-                    "upload_date": info.get('upload_date', '')
-                }
-        except Exception as e:
-            print(f"Warning: Couldn't get video info - {str(e)}")
+    def get_youtube_video_info(self, video_url: str) -> dict:
+        api_key = os.getenv("YOUTUBE_API_KEY")
+        video_id = self.extract_video_id(video_url)
+        if not api_key or not video_id:
             return {
                 "title": "",
                 "description": "",
-                "thumbnail": ""
+                "thumbnail": "",
+                "duration": 0,
+                "view_count": 0,
+                "upload_date": ""
             }
+
+        endpoint = (
+            f"https://www.googleapis.com/youtube/v3/videos"
+            f"?part=snippet,contentDetails,statistics"
+            f"&id={video_id}&key={api_key}"
+        )
+
+        try:
+            response = requests.get(endpoint)
+            data = response.json()
+            if not data["items"]:
+                return {}
+            video_data = data["items"][0]
+
+            snippet = video_data.get("snippet", {})
+            content = video_data.get("contentDetails", {})
+            stats = video_data.get("statistics", {})
+
+            duration_seconds = self.parse_duration(content.get("duration", "PT0S"))
+
+            return {
+                "title": snippet.get("title", ""),
+                "description": snippet.get("description", ""),
+                "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                "duration": duration_seconds,
+                "view_count": int(stats.get("viewCount", 0)),
+                "upload_date": snippet.get("publishedAt", "")
+            }
+
+        except Exception as e:
+            print(f"Error fetching video info: {str(e)}")
+            return {}
+
+    # def extract_video_id(self, url: str) -> str:
+    #     parsed = urlparse(url)
+    #     if parsed.hostname in ["youtu.be"]:
+    #         return parsed.path[1:]
+    #     if parsed.hostname in ["www.youtube.com", "youtube.com"]:
+    #         query = parse_qs(parsed.query)
+    #         return query.get("v", [""])[0]
+    #     return ""
+
+    def parse_duration(self, duration: str) -> int:
+        import isodate
+        try:
+            return int(isodate.parse_duration(duration).total_seconds())
+        except:
+            return 0
+
 
     def _make_request_with_retry(self, url, max_retries=None, initial_delay=None):
         """Helper method to make requests with retry logic"""

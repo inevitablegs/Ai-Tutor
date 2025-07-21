@@ -88,26 +88,26 @@ function ResultsView({
   };
 
   const handleGenerateQuiz = async () => {
-    setShowQuizNotice(true);
+    // setShowQuizNotice(true);
     // console.log("Generating quiz for these videos:", videos);
-    // setQuizLoading(true); // start loading
+     setQuizLoading(true); // start loading
 
-    // try {
-    //   const res = await generateMultiVideoMCQs(videos);
-    //   if (res.error) {
-    //     setError(res.error);
-    //   } else {
-    //     console.log("Quiz generated successfully:", res);
-    //     setQuestions(res.questions);
-    //     setUserAnswers({});
-    //     setCurrent(0);
-    //     navigate("/quiz");
-    //   }
-    // } catch (err) {
-    //   setError(err.message || "Failed to generate quiz");
-    // } finally {
-    //   setQuizLoading(false); // stop loading
-    // }
+     try {
+       const res = await generateMultiVideoMCQs(videos);
+       if (res.error) {
+         setError(res.error);
+       } else {
+         console.log("Quiz generated successfully:", res);
+         setQuestions(res.questions);
+         setUserAnswers({});
+         setCurrent(0);
+         navigate("/quiz");
+       }
+     } catch (err) {
+       setError(err.message || "Failed to generate quiz");
+     } finally {
+       setQuizLoading(false); // stop loading
+     }
   };
 
   return (

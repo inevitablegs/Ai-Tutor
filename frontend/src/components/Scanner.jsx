@@ -7,6 +7,7 @@ import { highlightPlugin } from "@react-pdf-viewer/highlight";
 import "@react-pdf-viewer/core/lib/styles/index.css";
 import "@react-pdf-viewer/default-layout/lib/styles/index.css";
 import Model2history from "./Model2history";
+import ScannerLoading from "./ScannerLoading";
 
 import { fetchUserPDFList } from "../utils/contentScan";
 import {
@@ -147,45 +148,43 @@ function Scanner() {
     setError("");
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setResponse(null);
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  setError("");
+  setResponse(null);
 
-    try {
-      if (mode === "pdf") {
-        if (!file) return setError("Please choose a PDF file to analyze.");
-        let data = await uploadPdf(file);
-        setIsLoading(true);
-        setResponse(data);
-        setActiveTab("results");
-        return;
-      }
-
-      if (mode === "yt") {
-        if (!url.trim())
-          return setError("Please paste a YouTube link to analyze.");
-        let data = await analyzeYoutube(url);
-        setIsLoading(true);
-        console.log("YouTube analysis response:", data);
-
-        setResponse(data);
-        setActiveTab("results");
-        return;
-      }
-    } catch (err) {
-      console.log(err);
-      
-      console.error(err);
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          "Something went wrong. Please try again."
-      );
-    } finally {
-      setIsLoading(false);
+  try {
+    if (mode === "pdf") {
+      if (!file) return setError("Please choose a PDF file to analyze.");
+      setIsLoading(true); // <-- Move it here
+      let data = await uploadPdf(file);
+      setResponse(data);
+      setActiveTab("results");
+      return;
     }
-  };
+
+    if (mode === "yt") {
+      if (!url.trim())
+        return setError("Please paste a YouTube link to analyze.");
+      setIsLoading(true); // <-- Move it here
+      let data = await analyzeYoutube(url);
+      console.log("YouTube analysis response:", data);
+      setResponse(data);
+      setActiveTab("results");
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    setError(
+      err.response?.data?.error ||
+        err.message ||
+        "Something went wrong. Please try again."
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
+
 
   const getCurrentModeConfig = () => {
     return modeOptions.find((option) => option.value === mode);
@@ -204,6 +203,18 @@ function Scanner() {
 
   return (
     <div className="min-h-screen  text-white overflow-hidden">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm">
+          <ScannerLoading 
+            mode={mode} 
+            fileName={file?.name} 
+            url={url} 
+          />
+        </div>
+      )}
+
+
       {/* Animated Background */}
       <div className="fixed inset-0 pointer-events-none">
         <div
@@ -218,7 +229,7 @@ function Scanner() {
         <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-indigo-500/5 rounded-full blur-3xl animate-pulse delay-2000" />
       </div>
 
-      <div className="relative space-y-8 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="relative space-y-8 w-full">
         {/* ---------------- TAB 1 : SCANNER FORM ---------------- */}
         {activeTab === "form" && (
           <div
@@ -318,47 +329,7 @@ function Scanner() {
                 </div>
               </div>
 
-              {/* Conditional Notice for Scanner Issues */}
-              {mode === "pdf" && (
-                <div className="mt-6 p-6 bg-gradient-to-r from-yellow-900/40 to-orange-900/40 border border-yellow-400/30 rounded-2xl backdrop-blur-sm">
-                  <div className="flex items-start gap-4">
-                    <div className="bg-gradient-to-r from-yellow-500 to-orange-500 rounded-xl p-3">
-                      <AlertCircle className="w-6 h-6 text-white" />
-                    </div>
-                    <div>
-                      <p className="text-white font-semibold text-lg">
-                        ⚠️ PDF Scanner Notice
-                      </p>
-                      <p className="text-yellow-200 mt-1">
-                        We are currently experiencing performance issues with
-                        the PDF Scanner due to RAM limitations after deployment.
-                        Large files may load slowly or fail. Please try with
-                        smaller files or check back later.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {mode === "yt" && (
-                <div className="mt-6 p-6 bg-gradient-to-r from-yellow-900/40 to-orange-900/40 border border-yellow-400/30 rounded-2xl backdrop-blur-sm">
-                  <div className="flex items-start gap-4">
-                    <div className="bg-gradient-to-r from-yellow-500 to-orange-500 rounded-xl p-3">
-                      <AlertCircle className="w-6 h-6 text-white" />
-                    </div>
-                    <div>
-                      <p className="text-white font-semibold text-lg">
-                        ⚠️ YouTube Transcript Notice
-                      </p>
-                      <p className="text-yellow-200 mt-1">
-                        Due to post-deployment resource constraints, transcript
-                        fetching from YouTube videos may be incomplete or
-                        delayed. We’re actively working to improve this.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
+             
 
               {/* Enhanced Input Form */}
               <form onSubmit={handleSubmit} className="space-y-8 p-5">
@@ -485,7 +456,7 @@ function Scanner() {
 
         {/* ---------------- TAB 2 : RESULTS ---------------- */}
         {activeTab === "results" && (
-          <div className="bg-gradient-to-br from-gray-800/60 to-slate-900/60 rounded-3xl shadow-2xl border border-gray-700/50 backdrop-blur-sm">
+          <div className="w-full h-full flex-grow">
             <Model2results
               file={file}
               url={url}
