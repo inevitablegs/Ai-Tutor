@@ -1,5 +1,5 @@
 Directory structure:
-└── AiTutor/
+└── Ai-Tutor/
     ├── db.sqlite3
     ├── manage.py
     ├── requirements.txt
@@ -16,12 +16,15 @@ Directory structure:
     │   ├── serializers.py
     │   ├── tests.py
     │   ├── utils.py
+    │   ├── www.youtube.com_cookies.txt
     │   ├── yt_processor.py
     │   └── migrations/
     │       ├── 0001_initial.py
     │       ├── 0002_alter_user_options_userpdf_pdfconversation.py
     │       ├── 0003_useryoutubevideo_youtubeconversation.py
     │       ├── 0004_chaptergeneration_chapterresource_and_more.py
+    │       ├── 0005_userpdf_file.py
+    │       ├── 0006_alter_userpdf_file.py
     │       └── __init__.py
     ├── decentral_tutor/
     │   ├── __init__.py
@@ -50,7 +53,8 @@ Directory structure:
     │       │   ├── QuizLoading.jsx
     │       │   ├── Resources.jsx
     │       │   ├── ResultsView.jsx
-    │       │   └── Scanner.jsx
+    │       │   ├── Scanner.jsx
+    │       │   └── ScannerLoading.jsx
     │       ├── contexts/
     │       │   └── QuizContext.jsx
     │       ├── pages/
@@ -64,8 +68,24 @@ Directory structure:
     │           ├── contentScan.js
     │           ├── firebase.js
     │           └── getCurrentUserUID.js
-    └── transcripts/
-        └── multi_mcqs.json
+    ├── transcripts/
+    │   └── multi_mcqs.json
+    └── vectorstores/
+        ├── book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book/
+        │   ├── index.faiss
+        │   └── index.pkl
+        ├── book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book1/
+        │   ├── index.faiss
+        │   └── index.pkl
+        ├── book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book3/
+        │   ├── index.faiss
+        │   └── index.pkl
+        ├── yt_gvpHdrU1F1ZmUy7y4TqTLHsLVMR2_H0JfZDXStKY/
+        │   ├── index.faiss
+        │   └── index.pkl
+        └── yt_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_H0JfZDXStKY/
+            ├── index.faiss
+            └── index.pkl
 
 ================================================
 FILE: db.sqlite3
@@ -104,7 +124,30 @@ if __name__ == '__main__':
 ================================================
 FILE: requirements.txt
 ================================================
-[Non-text file]
+ï»¿Django==5.2.4
+djangorestframework==3.16.0
+djangorestframework_simplejwt==5.5.0
+django-cors-headers==4.7.0
+firebase-admin==6.9.0
+youtube_search==2.1.2
+youtube_transcript_api==1.1.1
+tavily-python==0.5.1
+python-dotenv==1.0.1
+groq==0.13.1
+gunicorn==23.0.0
+langchain==0.3.25
+langchain-google-genai==2.0.0
+langchain-community==0.3.24
+faiss-cpu==1.11.0
+google-generativeai==0.7.0
+google-ai-generativelanguage==0.6.5
+whitenoise==6.9.0
+pypdf==5.1.0
+google-api-python-client==2.163.0
+django-cloudinary-storage
+cloudinary==1.44.1
+beautifulsoup4
+isodate==0.7.2
 
 
 ================================================
@@ -218,7 +261,8 @@ from .yt_processor import YouTubeProcessor
 from .models import ChapterVideoResource, ChapterWebResource
 from .utils import get_video_resources, get_web_resources   
 from django.contrib.auth import get_user_model
-
+import cloudinary
+import cloudinary.uploader
 
 
 
@@ -548,11 +592,10 @@ class WebResourcesAPI(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
 
-
 class PDFQAAPI(APIView):
     parser_classes = [MultiPartParser]
     authentication_classes = [FirebaseAuthentication]
-    permission_classes = [IsAuthenticated]# Changed to require authentication
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         pdf_file = request.FILES.get('pdf')
@@ -562,19 +605,39 @@ class PDFQAAPI(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            # Save file to user-specific directory
-            upload_dir = os.path.join(settings.MEDIA_ROOT, 'user_uploads', request.user.firebase_uid)
-            os.makedirs(upload_dir, exist_ok=True)
-            file_path = os.path.join(upload_dir, pdf_file.name)
-            
-            with open(file_path, 'wb+') as destination:
-                for chunk in pdf_file.chunks():
-                    destination.write(chunk)
+        # File validation checks
+        if not pdf_file.name.lower().endswith('.pdf'):
+            return JsonResponse(
+                {'error': 'Only PDF files are allowed'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-            # Process the PDF
+        if pdf_file.size == 0:
+            return JsonResponse(
+                {'error': 'Uploaded file is empty'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        if pdf_file.size > MAX_FILE_SIZE:
+            return JsonResponse(
+                {'error': 'File size exceeds 10MB limit'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Ensure file pointer is at start
+            pdf_file.seek(0)
+            
             processor = PDFProcessor()
-            chunks = processor.process_pdf(file_path)
+            
+            # Process the PDF with user ID for Cloudinary organization
+            chunks, cloudinary_url, public_id = processor.process_pdf(
+                pdf_file,
+                user_id=request.user.firebase_uid
+            )
+            
+            # Create unique store name
             store_name = f"book_{request.user.firebase_uid}_{os.path.splitext(pdf_file.name)[0]}"
             processor.create_vector_store(chunks, store_name)
             
@@ -582,6 +645,7 @@ class PDFQAAPI(APIView):
             user_pdf = UserPDF.objects.create(
                 user=request.user,
                 file_name=pdf_file.name,
+                file=public_id,  # Cloudinary public_id
                 vector_store=store_name
             )
             
@@ -591,17 +655,29 @@ class PDFQAAPI(APIView):
                 'data': {
                     'id': user_pdf.id,
                     'file_name': user_pdf.file_name,
-                    'upload_time': user_pdf.upload_time
+                    'cloudinary_url': cloudinary_url,
+                    'upload_time': user_pdf.upload_time,
+                    'size': pdf_file.size  # Return file size for reference
                 }
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()  # Log the full error for debugging
+            
+            error_message = str(e)
+            if "Cloudinary" in error_message:
+                error_message = "Failed to upload PDF to cloud storage"
+            elif "PyPDF" in error_message:
+                error_message = "Failed to process PDF content"
+                
             return JsonResponse({
                 'status': False,
-                'error': str(e),
-                'message': 'Failed to process PDF'
+                'error': error_message,
+                'message': 'Failed to process PDF',
+                'debug': str(e) if settings.DEBUG else None
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+                        
 class QuestionAnswerAPI(APIView):
     authentication_classes = [FirebaseAuthentication]
     permission_classes = [IsAuthenticated]
@@ -669,13 +745,14 @@ class QuestionAnswerAPI(APIView):
             
         except Exception as e:
             print(f"!! DEBUG: Unexpected error: {str(e)}")
-            print(traceback.format_exc())  # This will print the full traceback
+            print(traceback.format_exc())
             return JsonResponse({
                 'status': False,
                 'error': str(e),
                 'traceback': traceback.format_exc(),
                 'message': 'Failed to answer question'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
 
 class UserPDFListAPI(APIView):
     authentication_classes = [FirebaseAuthentication]
@@ -686,11 +763,12 @@ class UserPDFListAPI(APIView):
         data = [{
             'id': pdf.id,
             'file_name': pdf.file_name,
+            'cloudinary_url': pdf.get_file_url(),  # Use the helper method
             'upload_time': pdf.upload_time,
             'conversation_count': pdf.conversations.count()
         } for pdf in pdfs]
         return JsonResponse({'status': True, 'data': data})
-
+    
 class PDFConversationHistoryAPI(APIView):
     authentication_classes = [FirebaseAuthentication]
     permission_classes = [IsAuthenticated]
@@ -698,7 +776,7 @@ class PDFConversationHistoryAPI(APIView):
     def get(self, request, pdf_id):
         try:
             user_pdf = UserPDF.objects.get(id=pdf_id, user=request.user)
-            conversations = user_pdf.conversations.all().order_by('-created_at')[:50]  # Limit to 50 most recent
+            conversations = user_pdf.conversations.all().order_by('-created_at')[:50]
             data = [{
                 'question': conv.question,
                 'answer': json.loads(conv.answer),
@@ -710,7 +788,7 @@ class PDFConversationHistoryAPI(APIView):
                 'status': False,
                 'error': 'PDF not found'
             }, status=status.HTTP_404_NOT_FOUND)
-
+        
 class DeletePDFAPI(APIView):
     authentication_classes = [FirebaseAuthentication]
     permission_classes = [IsAuthenticated]
@@ -718,9 +796,27 @@ class DeletePDFAPI(APIView):
     def delete(self, request, pdf_id):
         try:
             user_pdf = UserPDF.objects.get(id=pdf_id, user=request.user)
-            
+
+            # Delete from Cloudinary
+            if user_pdf.file:  # This is the CloudinaryField
+                try:
+                    # Get the public_id from the Cloudinary resource
+                    public_id = user_pdf.file.public_id
+                    # Destroy using the public_id
+                    result = cloudinary.uploader.destroy(
+                        public_id,
+                        resource_type='raw',
+                        invalidate=True  # Optional: purge CDN cache
+                    )
+                    if result.get('result') == 'ok':
+                        print(f"Successfully deleted from Cloudinary: {public_id}")
+                    else:
+                        print(f"Cloudinary deletion failed: {result.get('result')}")
+                except Exception as e:
+                    print(f"Error deleting from Cloudinary: {str(e)}")
+                    # Continue with deletion even if Cloudinary fails
+
             # Delete vector store
-            processor = PDFProcessor()
             vectorstore_path = os.path.join(
                 settings.BASE_DIR, 
                 "vectorstores", 
@@ -729,25 +825,15 @@ class DeletePDFAPI(APIView):
             if os.path.exists(vectorstore_path):
                 import shutil
                 shutil.rmtree(vectorstore_path)
-            
-            # Delete the file
-            file_path = os.path.join(
-                settings.MEDIA_ROOT, 
-                'user_uploads', 
-                request.user.firebase_uid,
-                user_pdf.file_name
-            )
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            
+
             # Delete database record
             user_pdf.delete()
-            
+
             return JsonResponse({
                 'status': True,
                 'message': 'PDF and all related data deleted successfully'
             })
-            
+
         except UserPDF.DoesNotExist:
             return JsonResponse({
                 'status': False,
@@ -758,8 +844,7 @@ class DeletePDFAPI(APIView):
                 'status': False,
                 'error': str(e),
                 'message': 'Failed to delete PDF'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)        
 
 
 
@@ -928,86 +1013,39 @@ from .utils import (
 )
 
 
-# core/api.py
-
-# ... other imports ...
-from .yt_processor import YouTubeProcessor # Make sure this is imported
-# ... rest of MultiVideoMCQAPI ...
-
 class MultiVideoMCQAPI(APIView):
-    permission_classes = [AllowAny] # You might want to change this to IsAuthenticated in production
+    permission_classes = [AllowAny]
 
     def post(self, request):
         video_urls = request.data.get("video_urls")
         if not video_urls or len(video_urls) != 4:
             return JsonResponse({"error": "Provide exactly 4 video URLs"}, status=400)
 
-        # Ensure all video_urls are just strings if they came in as objects
-        video_urls = [v.get("url", v) if isinstance(v, dict) else v for v in video_urls]
+        goal_distribution = [2, 3, 2, 3]
 
+        from .utils import get_transcript_chunks_from_youtube
 
-        goal_distribution = [2, 3, 2, 3] # This distribution seems off if you want 10 questions total (sum is 10). Let's keep it for now.
-
-        from .yt_processor import YouTubeProcessor # Moved to top-level import
-        yt_processor = YouTubeProcessor() # Instantiate once per request
-
-        def process_single_video_for_mcq(video_url_str):
+        def process_video(video_url):
             try:
-                video_id = yt_processor.extract_video_id(video_url_str)
-                video_info = yt_processor._get_video_info(video_id) # Private method, but it fetches info
-                if not video_info:
-                    print(f"[ERROR] Could not get video info for {video_url_str}")
+                # Extract URL from dict if needed
+                video_url_str = video_url["url"] if isinstance(video_url, dict) else video_url
+
+                transcript_chunks = get_transcript_chunks_from_youtube(video_url_str)
+                if not transcript_chunks:
                     return []
 
-                # Use the official API transcript (as parsed by yt_processor._parse_transcript)
-                transcript_raw_entries, language = yt_processor.get_transcript(video_id)
-                if not transcript_raw_entries:
-                    print(f"[ERROR] No transcript found for {video_url_str} via official API.")
-                    return []
-
-                # Flatten the transcript entries into a single string to mimic how utils.generate_mcqs_from_transcript expects it
-                # This requires adapting generate_mcqs_from_transcript if it needs chunked text with metadata.
-                # For simplicity, let's join and then let generate_mcqs_from_transcript handle its own text_splitter if it has one.
-                # Or better yet, reuse the parsing from yt_processor if possible.
-
-                # Best approach: create dummy Document objects if generate_mcqs_from_transcript needs them.
-                # Or, better: adapt generate_mcqs_from_transcript to take the direct list of entries from get_transcript
-                
-                # For now, let's create a format similar to what utils.parse_transcript returns.
-                # The generate_mcqs_from_transcript is expecting the format from utils.parse_transcript:
-                # [{'text': '...', 'start': float, 'start_seconds': float, 'time_range': '...'}]
-
-                formatted_chunks_for_mcq_gen = []
-                for entry in transcript_raw_entries:
-                    # Assuming yt_processor's transcript entries have 'text' and 'start'
-                    # We need to reconstruct the 'time_range' as expected by generate_mcqs_from_transcript
-                    start_time_srt = yt_processor._format_seconds_to_srt(entry['start'])
-                    formatted_chunks_for_mcq_gen.append({
-                        'text': entry['text'],
-                        'start': entry['start'],
-                        'start_seconds': entry['start'],
-                        'time_range': f"{start_time_srt} --> {start_time_srt}" # or more accurate end time if available
-                    })
-
-                # If no content, return early
-                if not formatted_chunks_for_mcq_gen:
-                    print(f"[ERROR] Formatted chunks for MCQ generation empty for {video_url_str}")
-                    return []
-
-                # Generate MCQs using the common utility function
-                # The function `generate_mcqs_from_transcript` is still in `core/utils.py` and uses gemini-2.5-flash
-                # This part remains mostly the same.
-                _, mcqs = generate_mcqs_from_transcript(formatted_chunks_for_mcq_gen, video_id)
+                video_id = get_video_id(video_url_str)
+                _, mcqs = generate_mcqs_from_transcript(transcript_chunks, video_id)
                 return mcqs or []
 
             except Exception as e:
-                print(f"[ERROR] Processing failed for {video_url_str}: {traceback.format_exc()}")
+                print(f"[ERROR] Processing failed for {video_url}: {str(e)}")
                 return []
 
-        # ... rest of the APIView (ThreadPoolExecutor and result aggregation) ...
+
 
         with ThreadPoolExecutor(max_workers=4) as executor:
-            all_mcqs = list(executor.map(process_single_video_for_mcq, video_urls))
+            all_mcqs = list(executor.map(process_video, video_urls))
 
         # Step 1: Try to assign original goal distribution
         combined_questions = []
@@ -1019,7 +1057,9 @@ class MultiVideoMCQAPI(APIView):
                 combined_questions.extend(to_add)
                 if len(mcqs) > goal:
                     leftovers.extend(mcqs[goal:])
-            # No 'else' block, because if mcqs is empty, nothing to do for this video.
+            else:
+                # This video failed or returned empty
+                continue
 
         # Step 2: Fill remaining questions from leftovers if total < 10
         while len(combined_questions) < 10 and leftovers:
@@ -1139,6 +1179,7 @@ FILE: core/models.py
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
+from cloudinary.models import CloudinaryField  # Add this import
 
 class UserManager(BaseUserManager):
     def create_user(self, firebase_uid, email, username, **extra_fields):
@@ -1191,8 +1232,6 @@ class User(AbstractBaseUser, PermissionsMixin):
         verbose_name = "User"
         verbose_name_plural = "Users"
 
-# core/models.py
-
 class ChapterGeneration(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='chapter_generations')
     topic = models.CharField(max_length=255)
@@ -1222,12 +1261,17 @@ class ChapterWebResource(models.Model):
 class UserPDF(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pdfs')
     file_name = models.CharField(max_length=255)
+    file = CloudinaryField('pdf', resource_type='raw')  # Changed to CloudinaryField
     vector_store = models.CharField(max_length=255)
     upload_time = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
         return f"{self.user.username}'s PDF: {self.file_name}"
     
+    def get_file_url(self):
+        """Helper method to get the Cloudinary URL"""
+        return self.file.url if self.file else None
+
 class PDFConversation(models.Model):
     pdf = models.ForeignKey(UserPDF, on_delete=models.CASCADE, related_name='conversations')
     question = models.TextField()
@@ -1240,14 +1284,13 @@ class PDFConversation(models.Model):
     def __str__(self):
         return f"Conversation about {self.pdf.file_name}"
 
-
 class UserYouTubeVideo(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='youtube_videos')
     video_url = models.URLField()
-    video_id = models.CharField(max_length=20)  # Store YouTube video ID separately
+    video_id = models.CharField(max_length=20)
     video_title = models.CharField(max_length=255)
     thumbnail_url = models.URLField()
-    vector_store = models.CharField(max_length=255)  # Store path to vector store
+    vector_store = models.CharField(max_length=255)
     upload_time = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
@@ -1281,6 +1324,9 @@ from langchain.schema import Document
 import re
 import hashlib
 import json
+import tempfile
+import cloudinary
+import cloudinary.uploader
 from django.conf import settings
 
 class PDFProcessor:
@@ -1289,6 +1335,13 @@ class PDFProcessor:
         self.groq_model = "deepseek-r1-distill-llama-70b"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
         self.embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        
+        # Configure Cloudinary
+        cloudinary.config(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET")
+        )
 
     def clean_text(self, text: str) -> str:
         lines = text.splitlines()
@@ -1298,48 +1351,92 @@ class PDFProcessor:
     def generate_text_hash(self, text: str) -> str:
         return hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
 
-    def process_pdf(self, pdf_path):
-        print("Loading and chunking PDF with page tracking...")
-        loader = PyPDFLoader(pdf_path)
-        raw_pages = loader.load()
+    def upload_to_cloudinary(self, file, user_id=None):
+        """Upload file to Cloudinary and return secure URL"""
+        try:
+            upload_result = cloudinary.uploader.upload_large(
+    file,
+    resource_type='raw',
+    folder=f"user_pdfs/{user_id}" if user_id else "user_pdfs",
+    unique_filename=True,
+    overwrite=False,
+    use_filename=True
+)
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+            return upload_result['secure_url'], upload_result['public_id']
+        except Exception as e:
+            raise Exception(f"Cloudinary upload failed: {str(e)}")
 
-        chunks = []
-        for page_num, page_doc in enumerate(raw_pages, start=1):
-            page_text = self.clean_text(page_doc.page_content)
-            page_chunks = text_splitter.split_text(page_text)
+    def process_pdf(self, pdf_file, user_id=None):
+        """Process PDF file"""
+        print("Processing PDF...")
+        
+        try:
+            # Save to temp file first
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                for chunk in pdf_file.chunks():
+                    tmp_file.write(chunk)
+                tmp_path = tmp_file.name
             
-            for chunk_num, chunk_text in enumerate(page_chunks, start=1):
-                start_pos = page_text.find(chunk_text)
-                end_pos = start_pos + len(chunk_text)
-                
-                chunks.append(Document(
-                    page_content=chunk_text,
-                    metadata={
-                        "source": pdf_path,
-                        "page": page_num,
-                        "chunk_id": f"p{page_num}c{chunk_num}",
-                        "position": {
-                            "start": start_pos,
-                            "end": end_pos,
-                            "length": len(chunk_text)
-                        },
-                        "preview": chunk_text[:50] + ("..." if len(chunk_text) > 50 else ""),
-                        "text_hash": self.generate_text_hash(chunk_text),
-                        "page_hash": self.generate_text_hash(page_text)
-                    }
-                ))
+            print(f"Temporarily saved PDF to: {tmp_path}")
+            
+            # Upload to Cloudinary
+            try:
+                with open(tmp_path, 'rb') as f:
+                    cloudinary_url, public_id = self.upload_to_cloudinary(f, user_id)
+                    print(f"PDF uploaded to Cloudinary: {cloudinary_url}")
+            except Exception as e:
+                raise Exception(f"Cloudinary upload failed: {str(e)}")
 
-        print(f"Created {len(chunks)} text chunks from {len(raw_pages)} pages")
-        return chunks
+            # Process the PDF from temp file
+            loader = PyPDFLoader(tmp_path)
+            raw_pages = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+
+            chunks = []
+            for page_num, page_doc in enumerate(raw_pages, start=1):
+                page_text = self.clean_text(page_doc.page_content)
+                page_chunks = text_splitter.split_text(page_text)
+
+                for chunk_num, chunk_text in enumerate(page_chunks, start=1):
+                    start_pos = page_text.find(chunk_text)
+                    end_pos = start_pos + len(chunk_text)
+
+                    chunks.append(Document(
+                        page_content=chunk_text,
+                        metadata={
+                            "source": cloudinary_url,
+                            "page": page_num,
+                            "chunk_id": f"p{page_num}c{chunk_num}",
+                            "position": {
+                                "start": start_pos,
+                                "end": end_pos,
+                                "length": len(chunk_text)
+                            },
+                            "preview": chunk_text[:50] + ("..." if len(chunk_text) > 50 else ""),
+                            "text_hash": self.generate_text_hash(chunk_text),
+                            "page_hash": self.generate_text_hash(page_text),
+                            "cloudinary_id": public_id
+                        }
+                    ))
+
+            print(f"Created {len(chunks)} text chunks from {len(raw_pages)} pages")
+            return chunks, cloudinary_url, public_id
+
+        except Exception as e:
+            raise Exception(f"PDF processing failed: {str(e)}")
+        finally:
+            # Clean up temporary file
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                print(f"Removed temporary file: {tmp_path}")
 
     def create_vector_store(self, chunks, store_name):
         print("Creating embeddings and vector store...")
         vectorstore = FAISS.from_documents(chunks, self.embedding_model)
         print(f"Vector store created with {vectorstore.index.ntotal} embeddings")
         
-        # Save to user-specific directory
+        # Save to vectorstores directory
         store_path = os.path.join(settings.BASE_DIR, "vectorstores", store_name)
         vectorstore.save_local(store_path)
         print(f"Vector store saved at {store_path}")
@@ -1438,7 +1535,8 @@ Format your response as:
                     "text": doc.page_content,
                     "preview": doc.metadata["preview"],
                     "page_hash": doc.metadata["page_hash"],
-                    "text_hash": doc.metadata["text_hash"]
+                    "text_hash": doc.metadata["text_hash"],
+                    "cloudinary_id": doc.metadata.get("cloudinary_id", "")
                 } for doc in similar_docs
             ],
             "context_hash": self.generate_text_hash(full_context)
@@ -1663,10 +1761,14 @@ from typing import List, Dict, TypedDict
 import time
 from datetime import timedelta
 from dotenv import load_dotenv
-from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_search import YoutubeSearch
 from tavily import TavilyClient
 import google.generativeai as genai
+from .yt_processor import YouTubeProcessor
+import re 
+
+# Initialize YouTubeProcessor (which includes proxy setup)
+yt_processor = YouTubeProcessor()
 
 # Initialize Gemini and Tavily
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -1824,95 +1926,22 @@ def display_single_chapter_resources(chapter: ChapterOutput):
         print(f"  URL: {resource['url']}")
         print(f"  Source: {resource['source']}")
 
-if __name__ == "__main__":
-    print("Study Resource Generator")
-    topic = input("Enter your study topic: ").strip() or "Python Programming"
-    grade = input("Enter grade/standard level: ").strip() or "high school"
-    
-    try:
-        # First generate all chapter names
-        chapter_names = generate_chapter_names(topic, grade)
-        display_chapters(chapter_names)
-        
-        # Ask user which chapter they want resources for
-        while True:
-            try:
-                chapter_num = input("\nEnter chapter number to generate resources for (1-10) or 'q' to quit: ").strip()
-                if chapter_num.lower() == 'q':
-                    break
-                
-                chapter_num = int(chapter_num)
-                if 1 <= chapter_num <= 10:
-                    selected_chapter = chapter_names[chapter_num - 1]
-                    print(f"\nGenerating resources for Chapter {chapter_num}: {selected_chapter}...")
-                    
-                    # Generate resources only for the selected chapter
-                    videos = get_video_resources(topic, grade, selected_chapter)
-                    websites = get_web_resources(topic, grade, selected_chapter)
-                    
-                    chapter_output = {
-                        "name": selected_chapter,
-                        "youtube_videos": videos,
-                        "web_resources": websites
-                    }
-                    
-                    display_single_chapter_resources(chapter_output)
-                else:
-                    print("Please enter a number between 1 and 10.")
-            except ValueError:
-                print("Please enter a valid number or 'q' to quit.")
-                
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-
-
-
-
-
-# Load environment variables
-load_dotenv()
-
-# Initialize Gemini
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel('gemini-2.5-flash')
-
 def get_video_id(video_url: str) -> str:
-    """Extract video ID from a YouTube URL or dict"""
-    # Handle accidental dict input
-    if isinstance(video_url, dict):
-        video_url = video_url.get("url", "")
-
-    if "v=" in video_url:
-        return video_url.split("v=")[1].split("&")[0]
-    elif "youtu.be/" in video_url:
-        return video_url.split("youtu.be/")[1].split("?")[0]
-    else:
-        return video_url.strip()  # Fallback: assume already ID
-
+    """Extract video ID from a YouTube URL using YouTubeProcessor"""
+    return yt_processor.extract_video_id(video_url)
 
 def download_youtube_transcript(video_id: str, languages: list = ['en']) -> tuple:
-    """Download transcript and return as formatted text with timestamps"""
+    """Download transcript using YouTubeProcessor with proxy support"""
     try:
-        # Try to get transcript in each language until successful
-        transcript_list = None
-        for lang in languages:
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                print(f"Found transcript in language: {lang}")
-                break
-            except:
-                continue
-        
-        if not transcript_list:
-            raise Exception("No transcript available for the video in the specified languages")
-        
+        chunks = yt_processor.load_youtube_transcript(f"https://www.youtube.com/watch?v={video_id}")
+        if not chunks:
+            return None, None
+            
         # Format the transcript with timestamps
         formatted_transcript = []
-        for entry in transcript_list:
-            start_time = entry['start']
-            text = entry['text']
+        for chunk in chunks:
+            start_time = chunk.metadata["timestamp"]["start"]
+            text = chunk.page_content
             formatted_transcript.append(
                 f"[{format_seconds_to_srt(start_time)}] {text}"
             )
@@ -1931,7 +1960,7 @@ def format_seconds_to_srt(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 def parse_transcript(transcript_text: str) -> list:
-    """Parse transcript text into a list of chunks with text and timestamps"""
+    """Parse transcript text into a list of chunks with timestamps"""
     chunks = []
     lines = transcript_text.split('\n')
     
@@ -1955,9 +1984,6 @@ def srt_time_to_seconds(time_str: str) -> float:
     hh_mm_ss, mmm = time_str.split(',')
     hh, mm, ss = hh_mm_ss.split(':')
     return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
-
-import re
-import json
 
 def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tuple:
     """Generate MCQ questions from transcript chunks using Gemini with YouTube links"""
@@ -2044,87 +2070,103 @@ def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tup
         print(f"Error generating MCQs: {str(e)}")
         return None, None
 
-
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
-from datetime import timedelta
-from .yt_processor import YouTubeProcessor
-
-def format_seconds_to_srt(seconds: float) -> str:
-    td = timedelta(seconds=seconds)
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    milliseconds = td.microseconds // 1000
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-
-def srt_time_to_seconds(time_str: str) -> float:
-    hh_mm_ss, mmm = time_str.split(',')
-    hh, mm, ss = hh_mm_ss.split(':')
-    return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
-
-def parse_transcript(transcript_text: str) -> list:
-    chunks = []
-    lines = transcript_text.split('\n')
-    for line in lines:
-        if line.startswith('[') and ']' in line:
-            time_part, text = line.split(']', 1)
-            time_str = time_part[1:]
-            start_time = srt_time_to_seconds(time_str)
-            chunks.append({
-                'text': text.strip(),
-                'start': start_time,
-                'start_seconds': start_time,
-                'time_range': f"{time_str} --> {time_str}"
-            })
-    return chunks
-
 def get_transcript_chunks_from_youtube(video_url: str, languages: list = ['en', 'hi']) -> list:
+    """Get transcript chunks using YouTubeProcessor with proxy support"""
     try:
-        yt = YouTubeProcessor()
-        video_id = yt.extract_video_id(video_url)
+        video_id = yt_processor.extract_video_id(video_url)
+        chunks = yt_processor.load_youtube_transcript(video_url)
         
-        # First try manual transcript
-        transcript = None
-        for lang in languages:
-            try:
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                print(f"[DEBUG] Found manual transcript in {lang}")
-                break
-            except Exception:
-                continue
-
-        # If not found, fallback to auto
-        if not transcript:
-            try:
-                all_transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                for t in all_transcripts:
-                    if t.is_generated and t.language_code in languages:
-                        print(f"[DEBUG] Found auto-generated transcript in {t.language_code}")
-                        transcript = t.fetch()
-                        break
-            except Exception as e:
-                print(f"[ERROR] Transcript list failed: {e}")
-
-        if not transcript:
-            print(f"[ERROR] No transcript found for {video_id}")
-            return []
-
-        # Format transcript
-        formatted_transcript = []
-        for entry in transcript:
-            start = entry['start']
-            text = entry['text']
-            formatted_transcript.append(f"[{format_seconds_to_srt(start)}] {text}")
-
-        full_text = "\n".join(formatted_transcript)
-        return parse_transcript(full_text)
-
-    except (NoTranscriptFound, TranscriptsDisabled) as e:
-        print(f"[ERROR] Transcript not available: {e}")
-        return []
+        # Format transcript as list of dicts similar to the original format
+        formatted_chunks = []
+        for chunk in chunks:
+            formatted_chunks.append({
+                'text': chunk.page_content,
+                'start': chunk.metadata['timestamp']['start'],
+                'start_seconds': chunk.metadata['timestamp']['start'],
+                'time_range': format_seconds_to_srt(chunk.metadata['timestamp']['start']) + 
+                              " --> " + 
+                              format_seconds_to_srt(chunk.metadata['timestamp']['end'])
+            })
+        
+        return formatted_chunks
     except Exception as e:
-        print(f"[ERROR] Unexpected error: {str(e)}")
+        print(f"[ERROR] Failed to get transcript chunks: {str(e)}")
         return []
+
+if __name__ == "__main__":
+    print("Study Resource Generator")
+    topic = input("Enter your study topic: ").strip() or "Python Programming"
+    grade = input("Enter grade/standard level: ").strip() or "high school"
+    
+    try:
+        # First generate all chapter names
+        chapter_names = generate_chapter_names(topic, grade)
+        display_chapters(chapter_names)
+        
+        # Ask user which chapter they want resources for
+        while True:
+            try:
+                chapter_num = input("\nEnter chapter number to generate resources for (1-10) or 'q' to quit: ").strip()
+                if chapter_num.lower() == 'q':
+                    break
+                
+                chapter_num = int(chapter_num)
+                if 1 <= chapter_num <= 10:
+                    selected_chapter = chapter_names[chapter_num - 1]
+                    print(f"\nGenerating resources for Chapter {chapter_num}: {selected_chapter}...")
+                    
+                    # Generate resources only for the selected chapter
+                    videos = get_video_resources(topic, grade, selected_chapter)
+                    websites = get_web_resources(topic, grade, selected_chapter)
+                    
+                    chapter_output = {
+                        "name": selected_chapter,
+                        "youtube_videos": videos,
+                        "web_resources": websites
+                    }
+                    
+                    display_single_chapter_resources(chapter_output)
+                else:
+                    print("Please enter a number between 1 and 10.")
+            except ValueError:
+                print("Please enter a valid number or 'q' to quit.")
+                
+    except Exception as e:
+        print(f"Error: {e}")
+
+# Load environment variables
+load_dotenv()
+
+
+
+================================================
+FILE: core/www.youtube.com_cookies.txt
+================================================
+# Netscape HTTP Cookie File
+# http://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file!  Do not edit.
+
+.youtube.com	TRUE	/	TRUE	1787485542	PREF	tz=Asia.Calcutta&f5=30000&f7=100&f6=40000000&f4=4000000
+.youtube.com	TRUE	/	TRUE	1786945731	LOGIN_INFO	AFmmF2swRQIgcbrT4_5G7Vg1UgFBz3yaGCnQ79TtJ2xrRvQCeN_ybfQCIQCb3E-szCK91Zq9lQpKx-am5r8g-iHdbCs3T0lZMLZOsA:QUQ3MjNmel9BenluUjdBa0h0Q1dBc1BOZ3lWTk9NU1NDWVR0bTdLQm01dW5tNXNpYjdvd0M1VDdYOXVITUluNnpPNTVzS0RWaVhuZFhqUTVtVktPdDgwVG5KRUpUUnhoc2FEcnIzY0tGZ0ZTNnJxVUFBQUtPNENwT2xwZmxxRlFVcWM1RHlJOUh3MWlhdUowVDE1TzNkdlhQeENDOWxXdU5R
+.youtube.com	TRUE	/	FALSE	1787048824	SID	g.a000zAjJ22aqm-LLwniznxza8twqP4Wc2r3w4QMrRH8wjN0AfqXBkxs2O2UAyNZDww3fu-3W_wACgYKAcASARESFQHGX2Mi9C2Z5_1u2FatqkZnJ1lMoxoVAUF8yKoC1vYexMWAWTO41pe7HnAr0076
+.youtube.com	TRUE	/	TRUE	1787048824	__Secure-1PSID	g.a000zAjJ22aqm-LLwniznxza8twqP4Wc2r3w4QMrRH8wjN0AfqXBmnufFnu3ITpl5PUA22dQKQACgYKAS0SARESFQHGX2MihQdHzW1-qA6wMPATiHctrBoVAUF8yKqh47UVR_nh3EdZfRzYl0Rr0076
+.youtube.com	TRUE	/	TRUE	1787048824	__Secure-3PSID	g.a000zAjJ22aqm-LLwniznxza8twqP4Wc2r3w4QMrRH8wjN0AfqXBZC2da05H6mhaS_NmOxveXQACgYKATgSARESFQHGX2MitcEF51tJIor7DJkBpE1nMRoVAUF8yKpyUr2cGYqhqA4wv72E4Ouh0076
+.youtube.com	TRUE	/	FALSE	1787048824	HSID	Aah2o0O_CHGK2ummp
+.youtube.com	TRUE	/	TRUE	1787048824	SSID	ANNoxyORVwsj1c_8i
+.youtube.com	TRUE	/	FALSE	1787048824	APISID	42cfPMGdWPgqlWf6/AlGqdSq6ge8xcUT_n
+.youtube.com	TRUE	/	TRUE	1787048824	SAPISID	5TM8Jx0qoR5APtIN/AV2GRyQ88errYVmfB
+.youtube.com	TRUE	/	TRUE	1787048824	__Secure-1PAPISID	5TM8Jx0qoR5APtIN/AV2GRyQ88errYVmfB
+.youtube.com	TRUE	/	TRUE	1787048824	__Secure-3PAPISID	5TM8Jx0qoR5APtIN/AV2GRyQ88errYVmfB
+.youtube.com	TRUE	/	TRUE	1784461410	__Secure-1PSIDTS	sidts-CjIB5H03P1AF8ECVUwwm4sWMPjsdaTUmnN4b45iidhuuLwDUa_usX_ZhrnFsqlT9M0GRuhAA
+.youtube.com	TRUE	/	TRUE	1784461410	__Secure-3PSIDTS	sidts-CjIB5H03P1AF8ECVUwwm4sWMPjsdaTUmnN4b45iidhuuLwDUa_usX_ZhrnFsqlT9M0GRuhAA
+.youtube.com	TRUE	/	FALSE	1784461546	SIDCC	AKEyXzWb37IbgZ0Qx44oMUNo7QFYB1Xmzrk4Xq-qKmqNO5EcxF3cKikApwBXZyxKKB6QTqLdbNZj
+.youtube.com	TRUE	/	TRUE	1784461546	__Secure-1PSIDCC	AKEyXzUJSU4kdbmUxR5A9lI8LKGvV_hPv2EXpOPuMMgQQndywbb4JNzj_INF4JC-jqyyOHOEtSgZ
+.youtube.com	TRUE	/	TRUE	1784461546	__Secure-3PSIDCC	AKEyXzUhvINARC-T9r-qqhuNTOabyKqrRVtuD13t_9_NdkOf-8TAN_vzDDcpB1Bl06ATKkCVRppB
+.youtube.com	TRUE	/	TRUE	1768477539	VISITOR_INFO1_LIVE	EtYGhQCeSLI
+.youtube.com	TRUE	/	TRUE	1768477539	VISITOR_PRIVACY_METADATA	CgJJThIEGgAgIA%3D%3D
+.youtube.com	TRUE	/	TRUE	0	YSC	Lxfu4zH2bGQ
+.youtube.com	TRUE	/	TRUE	1768475592	__Secure-ROLLOUT_TOKEN	CPq6-4_zoIqh8gEQvKP_-rvrigMY24PmoOXIjgM%3D
+
 
 
 ================================================
@@ -2135,51 +2177,77 @@ import re
 import json
 import hashlib
 import logging
-import time
-from typing import List, Dict, Optional, Union
-from yt_dlp import YoutubeDL
+import requests
+from typing import List, Dict, Optional, Union, Tuple
+from datetime import timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import WebshareProxyConfig
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 import google.generativeai as genai
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+import random
+import time
+import os
 import requests
-import os
-from typing import List, Dict, Union, Optional
-from datetime import timedelta
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-import json
+from urllib.parse import urlparse, parse_qs
 
-import os
-from typing import List, Dict, Tuple, Optional
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-import json
-from datetime import datetime, timedelta
-import hashlib
-import logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-from googleapiclient.discovery import build
 
 class YouTubeProcessor:
     def __init__(self):
-        self.youtube = build('youtube', 'v3', developerKey=os.getenv("YOUTUBE_API_KEY"))
+        # Load environment variables
+        load_dotenv()
+        
+        # Initialize configurations
+        self._init_configurations()
+        
+        # Initialize proxy settings
+        self._init_proxies()
+
+    def _init_configurations(self):
+        """Initialize all non-proxy related configurations"""
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_model = "deepseek-r1-distill-llama-70b"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
         self.embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         self.supported_languages = ['en', 'hi']  # English and Hindi (English first)
-        self.transcript_cache = {}
-        self.last_request_time = None
-        self.request_count = 0
-        self.MAX_REQUESTS_PER_MINUTE = 50  # YouTube API quota limit
+        self.max_retries = 3
+        self.initial_delay = 1
+
+    def _init_proxies(self):
+        """Initialize all proxy-related configurations"""
+        self.webshare_username = os.getenv("WEBSHARE_USERNAME")
+        self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
+        self.has_proxies = self.webshare_username and self.webshare_password
+        
+        # Configuration for requests library
+        self.requests_proxies = {
+            'http': f'http://{self.webshare_username}:{self.webshare_password}@p.webshare.io:80',
+            'https': f'http://{self.webshare_username}:{self.webshare_password}@p.webshare.io:80',
+        } if self.has_proxies else None
+        
+        # Configuration for YouTubeTranscriptApi
+        self.ytt_proxy_config = WebshareProxyConfig(
+            proxy_username=self.webshare_username,
+            proxy_password=self.webshare_password
+        ) if self.has_proxies else None
+        
+        # Headers to mimic browser
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Connection': 'keep-alive',
+        }
+        
+        # Initialize YouTubeTranscriptApi with correct proxy config
+        self.ytt_api = YouTubeTranscriptApi(proxy_config=self.ytt_proxy_config)
 
     @staticmethod
     def clean_text(text: str) -> str:
@@ -2195,140 +2263,198 @@ class YouTubeProcessor:
 
     @staticmethod
     def extract_video_id(video_url: str) -> str:
-        """Extract YouTube video ID from URL.
-        Supports:
-        - https://www.youtube.com/watch?v=k4oWqYT6tjk
-        - https://youtu.be/k4oWqYT6tjk
-        - https://youtu.be/k4oWqYT6tjk?si=wdVFChAiQdIawmR1
-        - and similar variations
-        """
-        # Handle youtu.be URLs
-        if "youtu.be/" in video_url:
-            return video_url.split("youtu.be/")[1].split("?")[0].split("/")[0]
+        """Extract YouTube video ID from URL"""
+        patterns = [
+    r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|youtu\.be\/)([^"&?\/\s]{11}))',
+    r'youtube\.com\/watch\?v=([^"&?\/\s]{11})',
+    r'youtu\.be\/([^"&?\/\s]{11})'
+]
         
-        # Handle standard YouTube URLs
-        if "v=" in video_url:
-            return video_url.split("v=")[1].split("&")[0]
+        for pattern in patterns:
+            match = re.search(pattern, video_url)
+            if match:
+                return match.group(1)
         
-        # If no pattern matches, return the original string (assuming it's just the ID)
-        return video_url
-
-    @staticmethod
-    def get_youtube_video_info(video_url: str) -> Dict:
-        """Get YouTube video metadata using yt-dlp"""
-        ydl_opts = {
-            'quiet': True,
-            'skip_download': True,
-            'extract_flat': True,
-        }
-        try:
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                return {
-                    "title": info.get('title', ''),
-                    "description": info.get('description', ''),
-                    "thumbnail": info.get('thumbnail', ''),
-                    "duration": info.get('duration', 0),
-                    "view_count": info.get('view_count', 0),
-                    "upload_date": info.get('upload_date', '')
-                }
-        except Exception as e:
-            print(f"Warning: Couldn't get video info - {str(e)}")
-            return {
-                "title": "",
-                "description": "",
-                "thumbnail": ""
-            }
-
+        return video_url  # Return as-is if no pattern matches (might already be an ID)
+    
     @staticmethod
     def format_timestamp_url(video_url: str, timestamp: float) -> str:
         """Format URL with timestamp parameter"""
         video_id = YouTubeProcessor.extract_video_id(video_url)
         return f"https://www.youtube.com/watch?v={video_id}&t={int(timestamp)}s"
+    
 
-    def _rate_limit(self):
-        """Handle API rate limiting"""
-        now = datetime.now()
-        if self.last_request_time and (now - self.last_request_time) < timedelta(seconds=60):
-            self.request_count += 1
-            if self.request_count >= self.MAX_REQUESTS_PER_MINUTE:
-                wait_time = 60 - (now - self.last_request_time).seconds
-                logger.warning(f"Rate limit reached. Waiting {wait_time} seconds...")
-                time.sleep(wait_time)
-                self.request_count = 0
-                self.last_request_time = datetime.now()
-        else:
-            self.last_request_time = now
-            self.request_count = 1
+    def get_youtube_video_info(self, video_url: str) -> dict:
+        api_key = os.getenv("YOUTUBE_API_KEY")
+        video_id = self.extract_video_id(video_url)
+        if not api_key or not video_id:
+            return {
+                "title": "",
+                "description": "",
+                "thumbnail": "",
+                "duration": 0,
+                "view_count": 0,
+                "upload_date": ""
+            }
 
-
-    def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
-        """
-        Get transcript using YouTube Data API with enhanced error handling
-        Returns:
-            tuple: (transcript_data, language_code) or (None, None) if not available
-        """
-        # Check cache first
-        cache_key = hashlib.md5(video_id.encode()).hexdigest()
-        if cache_key in self.transcript_cache:
-            return self.transcript_cache[cache_key]
+        endpoint = (
+            f"https://www.googleapis.com/youtube/v3/videos"
+            f"?part=snippet,contentDetails,statistics"
+            f"&id={video_id}&key={api_key}"
+        )
 
         try:
-            self._rate_limit()
-            
-            # Step 1: List available caption tracks
-            captions = self.youtube.captions().list(
-                part="snippet",
-                videoId=video_id
-            ).execute()
+            response = requests.get(endpoint)
+            data = response.json()
+            if not data["items"]:
+                return {}
+            video_data = data["items"][0]
 
-            if not captions.get('items'):
-                logger.info(f"No captions available for video {video_id}")
-                return None, None
+            snippet = video_data.get("snippet", {})
+            content = video_data.get("contentDetails", {})
+            stats = video_data.get("statistics", {})
 
-            # Step 2: Find preferred language track
-            preferred_languages = ['en', 'hi']  # English first, then Hindi
-            caption_track = None
-            
-            for lang in preferred_languages:
-                for item in captions['items']:
-                    if item['snippet']['language'] == lang and item['snippet']['trackKind'] != 'asr':  # Prefer manual over auto-generated
-                        caption_track = item
-                        break
-                if caption_track:
-                    break
+            duration_seconds = self.parse_duration(content.get("duration", "PT0S"))
 
-            if not caption_track:
-                logger.info(f"No supported language captions for video {video_id}")
-                return None, None
+            return {
+                "title": snippet.get("title", ""),
+                "description": snippet.get("description", ""),
+                "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                "duration": duration_seconds,
+                "view_count": int(stats.get("viewCount", 0)),
+                "upload_date": snippet.get("publishedAt", "")
+            }
 
-            # Step 3: Download the caption track
-            self._rate_limit()
-            transcript = self.youtube.captions().download(
-                id=caption_track['id'],
-                tfmt='srt'  # SubRip format for timestamps
-            ).execute()
-
-            # Step 4: Parse and format the transcript
-            formatted_transcript = self._parse_transcript(transcript)
-            
-            # Cache the result for 1 hour
-            self.transcript_cache[cache_key] = (formatted_transcript, caption_track['snippet']['language'])
-            
-            return formatted_transcript, caption_track['snippet']['language']
-
-        except HttpError as e:
-            if e.resp.status == 403:
-                logger.error("YouTube API quota exceeded")
-            elif e.resp.status == 404:
-                logger.error(f"Video or captions not found: {video_id}")
-            else:
-                logger.error(f"YouTube API HTTP error: {str(e)}")
-            return None, None
         except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
-            return None, None
+            print(f"Error fetching video info: {str(e)}")
+            return {}
 
+    # def extract_video_id(self, url: str) -> str:
+    #     parsed = urlparse(url)
+    #     if parsed.hostname in ["youtu.be"]:
+    #         return parsed.path[1:]
+    #     if parsed.hostname in ["www.youtube.com", "youtube.com"]:
+    #         query = parse_qs(parsed.query)
+    #         return query.get("v", [""])[0]
+    #     return ""
+
+    def parse_duration(self, duration: str) -> int:
+        import isodate
+        try:
+            return int(isodate.parse_duration(duration).total_seconds())
+        except:
+            return 0
+
+
+    def _make_request_with_retry(self, url, max_retries=None, initial_delay=None):
+        """Helper method to make requests with retry logic"""
+        max_retries = max_retries or self.max_retries
+        initial_delay = initial_delay or self.initial_delay
+        
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    url,
+                    proxies=self.requests_proxies,
+                    headers=self.headers,
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    return response
+                elif response.status_code == 429:  # Too Many Requests
+                    delay *= (2 + random.random())  # Exponential backoff with jitter
+                    time.sleep(delay)
+                else:
+                    return None
+            except Exception as e:
+                print(f"Request failed (attempt {attempt + 1}): {str(e)}")
+                delay *= (2 + random.random())
+                time.sleep(delay)
+        
+        return None
+
+    def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
+        """Get transcript with multiple fallback strategies"""
+        # First try standard API with proxies
+        try:
+            transcript = self.ytt_api.get_transcript(video_id, languages=['en'])
+            print("Found English transcript via API")
+            return transcript, 'en'
+        except Exception as e:
+            print(f"API failed for English transcript: {str(e)}")
+        
+        # Fallback 1: Try Hindi transcript
+        try:
+            transcript = self.ytt_api.get_transcript(video_id, languages=['hi'])
+            print("Found Hindi transcript via API")
+            return transcript, 'hi'
+        except NoTranscriptFound:
+            try:
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                for t in transcript_list:
+                    if t.language_code == 'hi' and t.is_generated:
+                        print("Found auto-generated Hindi transcript")
+                        return t.fetch(), 'hi'
+            except Exception as e:
+                print(f"Couldn't find Hindi transcript: {str(e)}")
+        except Exception as e:
+            print(f"Error fetching Hindi transcript: {str(e)}")
+        
+        # Fallback 2: Try scraping
+        scraped_transcript = self._scrape_transcript(video_id)
+        if scraped_transcript:
+            return scraped_transcript, 'en'
+        
+        return None, None
+
+    def _scrape_transcript(self, video_id: str) -> Optional[List[Dict]]:
+        """Fallback method to scrape transcript if API fails"""
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        response = self._make_request_with_retry(url)
+        if not response or response.status_code != 200:
+            return None
+        
+        try:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            script_tags = soup.find_all('script')
+            
+            # Look for transcript data in script tags
+            for script in script_tags:
+                if 'captionTracks' in str(script):
+                    # This is a simplified parser - actual implementation may need adjustment
+                    data = json.loads(script.string.split('ytInitialPlayerResponse = ')[1].split(';')[0])
+                    caption_tracks = data.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+                    
+                    for track in caption_tracks:
+                        if track.get('languageCode') in self.supported_languages:
+                            transcript_url = track.get('baseUrl')
+                            if transcript_url:
+                                transcript_response = self._make_request_with_retry(f"{transcript_url}&fmt=json3")
+                                if transcript_response:
+                                    return self._parse_scraped_transcript(transcript_response.json())
+        except Exception as e:
+            print(f"Scraping failed: {str(e)}")
+        
+        return None
+
+    def _parse_scraped_transcript(self, transcript_data: Dict) -> List[Dict]:
+        """Parse scraped transcript data into standard format"""
+        events = transcript_data.get('events', [])
+        transcript = []
+        
+        for event in events:
+            if 'segs' in event:
+                for seg in event['segs']:
+                    if seg.get('utf8'):
+                        transcript.append({
+                            'text': seg['utf8'],
+                            'start': event.get('tStartMs', 0) / 1000,
+                            'duration': event.get('dDurationMs', 3000) / 1000
+                        })
+        
+        return transcript
     def load_youtube_transcript(self, video_url: str) -> List[Document]:
         """Load and process YouTube transcript into chunks with timestamps"""
         video_id = self.extract_video_id(video_url)
@@ -2386,7 +2512,7 @@ class YouTubeProcessor:
                     "video_hash": self.generate_text_hash(full_text),
                     "video_title": video_info.get('title', 'Unknown'),
                     "video_id": video_id,
-                    "language": transcript_lang  # Add language metadata
+                    "language": transcript_lang
                 }
             ))
         
@@ -2401,10 +2527,11 @@ class YouTubeProcessor:
         
         # Save to specified path
         store_path = os.path.join("vectorstores", store_name)
+        os.makedirs(os.path.dirname(store_path), exist_ok=True)
         vectorstore.save_local(store_path)
         print(f"Vector store saved at {store_path}")
         return vectorstore
-
+    
     def load_vector_store(self, store_name: str) -> FAISS:
         """Load existing vector store from disk"""
         store_path = os.path.join("vectorstores", store_name)
@@ -2437,15 +2564,17 @@ class YouTubeProcessor:
             ]
         }
 
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions", 
-            json=payload, 
-            headers=headers
-        )
-        if response.status_code != 200:
-            raise Exception(f"Groq LLM error: {response.status_code} - {response.text}")
-        
-        return response.json()["choices"][0]["message"]["content"]
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions", 
+                json=payload, 
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise Exception(f"Groq LLM error: {str(e)}")
 
     def expand_query_with_llm(self, query: str, language: str = 'en') -> str:
         """Expand short queries for better semantic search"""
@@ -2468,14 +2597,14 @@ Expanded Version:""",
         return self.call_groq_llm(prompt, language)
 
     def answer_question(self, vectorstore: FAISS, question: str) -> Dict:
-        """Answer question using vector store context. Always returns answer in English."""
-        # Detect language of the question (but we'll always answer in English)
+        """Answer question using vector store context"""
+        # Detect language of the question
         question_lang = 'hi' if any('\u0900' <= char <= '\u097F' for char in question) else 'en'
         
-        # Step 1: Expand the query (can be in original language)
+        # Expand the query
         expanded_query = self.expand_query_with_llm(question, question_lang)
         
-        # Step 2: Semantic search on expanded query
+        # Semantic search
         similar_docs = vectorstore.max_marginal_relevance_search(
             query=expanded_query, 
             k=5, 
@@ -2489,11 +2618,10 @@ Expanded Version:""",
                 "thinking_process": ""
             }
 
-        # Prepare context for LLM (can be in any language)
+        # Prepare context
         full_context = "\n\n".join([doc.page_content for doc in similar_docs])
-        context_lang = similar_docs[0].metadata.get('language', 'en')
-
-        # Generate answer - always in English regardless of context language
+        
+        # Generate answer (always in English)
         prompt_template = """Analyze the question and provide:
 1. Your thinking process (marked with <thinking> tags)
 2. A detailed answer in English based strictly on the context
@@ -2511,15 +2639,12 @@ Format your response as:
 <thinking>Your analytical process here</thinking>
 <answer>Your structured answer in English here</answer>"""
         
-        prompt = prompt_template.format(
-            question=question,
-            context=full_context
+        llm_response = self.call_groq_llm(
+            prompt_template.format(question=question, context=full_context),
+            'en'
         )
         
-        # Force English response by setting language to 'en'
-        llm_response = self.call_groq_llm(prompt, 'en')
-        
-        # Extract thinking and answer parts
+        # Extract response parts
         thinking_process = ""
         answer = ""
         try:
@@ -2547,125 +2672,25 @@ Format your response as:
                 } for doc in similar_docs
             ],
             "context_hash": self.generate_text_hash(full_context),
-            "language": "en"  # Always return English as the response language
-    }
+            "language": "en"
+        }
 
     def process_video(self, video_url: str, store_name: str) -> Dict:
-        """Full processing pipeline for a YouTube video using official API"""
-        video_id = self.extract_video_id(video_url)
+        """Full processing pipeline for a YouTube video"""
+        chunks = self.load_youtube_transcript(video_url)
+        vectorstore = self.create_vector_store(chunks, store_name)
+        video_info = self.get_youtube_video_info(video_url)
         
-        try:
-            # Get video metadata
-            video_info = self._get_video_info(video_id)
-            
-            # Get transcript
-            transcript, language = self.get_transcript(video_id)
-            if not transcript:
-                raise Exception("No transcript available")
-            
-            # Process into chunks (using your existing method)
-            chunks = self._create_chunks_from_transcript(
-                transcript,
-                video_url,
-                video_info
-            )
-            
-            return {
-                "video_info": video_info,
-                "chunks": chunks,
-                "language": language,
-                "store_name": store_name
-            }
-            
-        except Exception as e:
-            print(f"Failed to process video: {str(e)}")
-            raise
+        return {
+            "vectorstore": vectorstore,
+            "video_info": video_info,
+            "chunks": chunks,
+            "store_name": store_name
+        }
 
+from dotenv import load_dotenv
+load_dotenv()
 
-    def _parse_transcript(self, transcript: str) -> List[Dict]:
-        """Parse SRT formatted transcript into our standard format"""
-        entries = []
-        blocks = transcript.strip().split('\n\n')
-        
-        for block in blocks:
-            lines = block.split('\n')
-            if len(lines) >= 3:
-                # Parse timestamp line (e.g., "00:00:01,000 --> 00:00:04,000")
-                time_range = lines[1]
-                start_time = self._srt_time_to_seconds(time_range.split('-->')[0].strip())
-                
-                # Combine text lines
-                text = ' '.join(lines[2:])
-                
-                entries.append({
-                    'text': text,
-                    'start': start_time,
-                    'duration': 0  # Will calculate below
-                })
-        
-        # Calculate durations
-        for i in range(len(entries)):
-            if i < len(entries) - 1:
-                entries[i]['duration'] = entries[i+1]['start'] - entries[i]['start']
-            else:
-                entries[i]['duration'] = 1  # Default duration for last entry
-        
-        return entries
-
-    def _srt_time_to_seconds(self, time_str: str) -> float:
-        """Convert SRT timestamp to seconds"""
-        hh_mm_ss, mmm = time_str.split(',')
-        hh, mm, ss = hh_mm_ss.split(':')
-        return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
-
-    def _get_video_info(self, video_id: str) -> Dict:
-        """Get video metadata with enhanced error handling"""
-        try:
-            self._rate_limit()
-            response = self.youtube.videos().list(
-                part="snippet,contentDetails",
-                id=video_id
-            ).execute()
-            
-            if not response.get('items'):
-                raise Exception("Video not found")
-                
-            item = response['items'][0]
-            return {
-                'title': item['snippet']['title'],
-                'description': item['snippet']['description'],
-                'thumbnail': item['snippet']['thumbnails']['high']['url'],
-                'duration': self._parse_duration(item['contentDetails']['duration']),
-                'channel': item['snippet']['channelTitle']
-            }
-            
-        except HttpError as e:
-            logger.error(f"Video info API error: {str(e)}")
-            return {}
-        except Exception as e:
-            logger.error(f"Video info error: {str(e)}")
-            return {}
-
-    # core/yt_processor.py - _parse_duration method
-    def _parse_duration(self, duration: str) -> int:
-        """
-        Convert ISO 8601 duration string (e.g., PT1H30M15S, PT5M) to total seconds.
-        Handles cases like PT19M, PT10S, PT1H, etc., by correctly extracting numbers.
-        """
-        total_seconds = 0
-        # Regular expressions to find hours, minutes, and seconds
-        hours_match = re.search(r'(\d+)H', duration)
-        minutes_match = re.search(r'(\d+)M', duration)
-        seconds_match = re.search(r'(\d+)S', duration)
-
-        if hours_match:
-            total_seconds += int(hours_match.group(1)) * 3600
-        if minutes_match:
-            total_seconds += int(minutes_match.group(1)) * 60
-        if seconds_match:
-            total_seconds += int(seconds_match.group(1))
-            
-        return total_seconds
 
 
 ================================================
@@ -2868,6 +2893,57 @@ class Migration(migrations.Migration):
 
 
 ================================================
+FILE: core/migrations/0005_userpdf_file.py
+================================================
+# Generated by Django 5.2.4 on 2025-07-18 09:55
+
+import cloudinary.models
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('core', '0004_chaptergeneration_chapterresource_and_more'),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='userpdf',
+            name='file',
+            field=cloudinary.models.CloudinaryField(blank=True, max_length=255, null=True, verbose_name='pdf'),
+        ),
+    ]
+
+
+
+================================================
+FILE: core/migrations/0006_alter_userpdf_file.py
+================================================
+# Generated by Django 5.2.4 on 2025-07-18 09:56
+
+import cloudinary.models
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('core', '0005_userpdf_file'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='userpdf',
+            name='file',
+            field=cloudinary.models.CloudinaryField(default='', max_length=255, verbose_name='pdf'),
+            preserve_default=False,
+        ),
+    ]
+
+
+
+================================================
 FILE: core/migrations/__init__.py
 ================================================
 
@@ -2959,6 +3035,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',  # For cross-origin requests during development
     # Remove 'rest_framework_simplejwt',
+    'cloudinary',
+    'cloudinary_storage',
 ]
 
 MIDDLEWARE = [
@@ -3025,8 +3103,6 @@ STATICFILES_DIRS = [
     os.path.join(BASE_DIR, 'frontend', 'build', 'static'),  # React static files
 ]
 
-STATICFILES_DIRS = []
-
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -3091,6 +3167,16 @@ VECTORSTORES_DIR = os.path.join(BASE_DIR, 'vectorstores')
 os.makedirs(VECTORSTORES_DIR, exist_ok=True)
 
 
+# Cloudinary Storage
+CLOUDINARY_STORAGE = {
+    'CLOUD_NAME': os.getenv('CLOUDINARY_CLOUD_NAME'),
+    'API_KEY': os.getenv('CLOUDINARY_API_KEY'),
+    'API_SECRET': os.getenv('CLOUDINARY_API_SECRET'),
+}
+
+DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+
+
 ================================================
 FILE: decentral_tutor/urls.py
 ================================================
@@ -3132,8 +3218,8 @@ urlpatterns = [
     
     # CSRF and frontend
     path('api/csrf/', get_csrf_token, name='api_csrf'),
-    # path('', TemplateView.as_view(template_name='index.html')),
-    # path('<path:path>', TemplateView.as_view(template_name='index.html')),
+    path('', TemplateView.as_view(template_name='index.html')),
+    path('<path:path>', TemplateView.as_view(template_name='index.html')),
 ]
 
 
@@ -3333,6 +3419,28 @@ FILE: frontend/src/index.css
 @import "tailwindcss";
 
 
+.custom-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.5); /* slate-800 */
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(to bottom, #6366f1, #8b5cf6); /* indigo to purple */
+  border-radius: 9999px;
+  border: 2px solid rgba(15, 23, 42, 0.6); /* outline blend */
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(to bottom, #818cf8, #a78bfa); /* lighter hover */
+}
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #8b5cf6 rgba(30, 41, 59, 0.5);
+}
 
 
 
@@ -3754,56 +3862,63 @@ FILE: frontend/src/components/Model2history.jsx
 ================================================
 import React, { useState, useEffect } from "react";
 import { fetchUserPDFList } from "../utils/contentScan";
-import { History, FileText, Youtube, Clock, MessageSquare } from "lucide-react";
-import { deletePdf } from "../utils/contentScan"; // Import the delete function
-import { fetchYouTubeHistory, deleteYoutubeVideo, fetchPDFConversationHistory } from "../utils/contentScan"; // Import YouTube functions
+import { History, FileText, Youtube, Clock, MessageSquare, Sparkles, Trash2, Play, BookOpen } from "lucide-react";
+import { deletePdf } from "../utils/contentScan";
+import { fetchYouTubeHistory, deleteYoutubeVideo, fetchPDFConversationHistory } from "../utils/contentScan";
 
-// Custom scrollbar styles
+// Enhanced scrollbar styles with theme matching
 const scrollbarStyles = `
   .custom-scrollbar::-webkit-scrollbar {
     width: 8px;
   }
   
   .custom-scrollbar::-webkit-scrollbar-track {
-    background: #e2e8f0;
-    border-radius: 4px;
+    background: rgba(71, 85, 105, 0.3);
+    border-radius: 8px;
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: linear-gradient(to bottom, #10b981, #14b8a6);
-    border-radius: 4px;
+    background: linear-gradient(to bottom, #3b82f6, #6366f1, #8b5cf6);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
   }
   
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(to bottom, #059669, #0d9488);
-  }
-  
-  .dark .custom-scrollbar::-webkit-scrollbar-track {
-    background: #334155;
-  }
-  
-  .dark .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: linear-gradient(to bottom, #34d399, #5eead4);
-  }
-  
-  .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(to bottom, #6ee7b7, #7dd3fc);
+    background: linear-gradient(to bottom, #2563eb, #4f46e5, #7c3aed);
   }
 `;
 
-// Inject styles
+// Inject enhanced styles
 if (typeof document !== "undefined") {
+  const existingStyle = document.querySelector('style[data-history-styles]');
+  if (existingStyle) {
+    existingStyle.remove();
+  }
+  
   const styleElement = document.createElement("style");
+  styleElement.setAttribute('data-history-styles', 'true');
   styleElement.textContent = scrollbarStyles;
   document.head.appendChild(styleElement);
 }
 
 const Model2history = () => {
-  const [activeTab, setActiveTab] = useState("pdf"); // 'pdf' or 'youtube'
+  const [activeTab, setActiveTab] = useState("pdf");
   const [pdfHistory, setPdfHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [ytHistory, setYtHistory] = useState([]);
-  const [selectedItem, setSelectedItem] = useState(null); // Store selected PDF or YT video
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // Mouse tracking for interactive background
+  useEffect(() => {
+    setIsLoaded(true);
+    const handleMouseMove = (e) => {
+      setMousePosition({ x: e.clientX, y: e.clientY });
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
 
   // Fetch PDF upload history
   useEffect(() => {
@@ -3824,13 +3939,13 @@ const Model2history = () => {
 
     const result = await deletePdf(pdfId);
     if (result.success) {
-      // Remove the deleted PDF from local state
       setPdfHistory((prev) => prev.filter((pdf) => pdf.id !== pdfId));
       alert("PDF deleted successfully.");
     } else {
       alert("Failed to delete PDF: " + result.message);
     }
   };
+
   useEffect(() => {
     setLoading(true);
     if (activeTab === "pdf") {
@@ -3861,260 +3976,349 @@ const Model2history = () => {
     }
   };
 
- const handlePdfClick = (pdf) => {
-  alert("Viewing conversation history for PDFs is not available yet.");
-};
-
-
+  const handlePdfClick = (pdf) => {
+    alert("Viewing conversation history for PDFs is not available yet.");
+  };
 
   const handleYouTubeClick = (video) => {
     alert("Viewing conversation history for YouTube is not available yet.");
-    // You can navigate, show a modal, etc.
   };
 
   return (
-    <section className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-4">
-        <div className="p-3 bg-gradient-to-r from-green-500 to-teal-600 rounded-lg">
-          <History className="w-6 h-6 text-white" />
-        </div>
-        <div>
-          <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
-            Analysis History
-          </h2>
-          <p className="text-slate-600 dark:text-slate-400">
-            View your previously analyzed content
-          </p>
-        </div>
+    <div className="min-h-screen  p-4 sm:p-5 md:p-6 relative overflow-hidden">
+      {/* Animated Background */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div 
+          className="absolute w-64 h-64 sm:w-80 sm:h-80 md:w-96 md:h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"
+          style={{
+            left: mousePosition.x - 192,
+            top: mousePosition.y - 192,
+            transition: 'all 0.3s ease-out'
+          }}
+        />
+        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl animate-pulse delay-1000" />
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-indigo-500/10 rounded-full blur-3xl animate-pulse delay-2000" />
       </div>
 
-      {/* Toggle Buttons */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <button
-          onClick={() => setActiveTab("pdf")}
-          className={`p-4 rounded-lg border-2 transition-all duration-200 text-left ${
-            activeTab === "pdf"
-              ? "border-green-500 bg-green-50 dark:bg-green-900/20"
-              : "border-slate-300 dark:border-slate-600 hover:border-slate-400 dark:hover:border-slate-500"
-          }`}
-        >
-          <div className="flex items-center gap-3">
-            <FileText
-              className={`w-5 h-5 ${
+      <div className={`relative max-w-6xl mx-auto transition-all duration-1000 ${isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}>
+        {/* Enhanced Header */}
+        <div className="bg-gradient-to-r from-gray-800/60 via-slate-800/60 to-gray-800/60 backdrop-blur-lg rounded-3xl shadow-2xl border border-gray-700/50 p-8 mb-8">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
+
+            <div className="relative">
+              <div className="p-4 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 rounded-2xl shadow-lg animate-pulse">
+                <History className="w-8 h-8 text-white" />
+              </div>
+              <div className="absolute -inset-1 bg-gradient-to-r from-blue-400 via-purple-400 to-indigo-400 rounded-2xl blur opacity-30 animate-pulse"></div>
+            </div>
+            <div>
+              <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold bg-gradient-to-r from-white via-blue-100 to-indigo-200 bg-clip-text text-transparent mb-2">
+                ðŸ“š Analysis History
+              </h1>
+              <p className="text-gray-300 text-lg">
+                View your previously analyzed content and conversations
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Enhanced Toggle Buttons */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <button
+            onClick={() => setActiveTab("pdf")}
+            className={`group relative p-4 sm:p-5 md:p-6 rounded-3xl border-2 transition-all duration-300 text-left overflow-hidden backdrop-blur-sm ${
+              activeTab === "pdf"
+                ? "border-blue-500 bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-indigo-700/20 shadow-2xl"
+                : "border-gray-600/50 bg-gradient-to-r from-gray-800/60 to-slate-800/60 hover:border-gray-500/70 hover:shadow-xl"
+            }`}
+          >
+            <div className="relative z-10 flex items-center gap-4">
+              <div className={`p-4 rounded-2xl shadow-lg transition-all duration-300 ${
                 activeTab === "pdf"
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-slate-500 dark:text-slate-400"
-              }`}
-            />
-            <div>
-              <h3
-                className={`font-medium ${
+                  ? "bg-gradient-to-r from-blue-600 to-indigo-700 animate-pulse"
+                  : "bg-gradient-to-r from-gray-700 to-slate-700 group-hover:from-gray-600 group-hover:to-slate-600"
+              }`}>
+                <FileText className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h3 className={`text-xl font-bold mb-2 transition-colors ${
                   activeTab === "pdf"
-                    ? "text-green-900 dark:text-green-100"
-                    : "text-slate-900 dark:text-slate-100"
-                }`}
-              >
-                PDF History
-              </h3>
-              <p
-                className={`text-sm ${
+                    ? "text-blue-100"
+                    : "text-gray-100 group-hover:text-white"
+                }`}>
+                  ðŸ“„ PDF Documents
+                </h3>
+                <p className={`text-sm transition-colors ${
                   activeTab === "pdf"
-                    ? "text-green-700 dark:text-green-300"
-                    : "text-slate-600 dark:text-slate-400"
-                }`}
-              >
-                Previously analyzed documents
-              </p>
+                    ? "text-blue-200"
+                    : "text-gray-400 group-hover:text-gray-300"
+                }`}>
+                  Previously analyzed documents and textbooks
+                </p>
+              </div>
             </div>
-          </div>
-        </button>
+            {activeTab === "pdf" && (
+              <div className="absolute inset-0 bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-indigo-700/10 animate-pulse" />
+            )}
+          </button>
 
-        <button
-          onClick={() => setActiveTab("youtube")}
-          className={`p-4 rounded-lg border-2 transition-all duration-200 text-left ${
-            activeTab === "youtube"
-              ? "border-green-500 bg-green-50 dark:bg-green-900/20"
-              : "border-slate-300 dark:border-slate-600 hover:border-slate-400 dark:hover:border-slate-500"
-          }`}
-        >
-          <div className="flex items-center gap-3">
-            <Youtube
-              className={`w-5 h-5 ${
+          <button
+            onClick={() => setActiveTab("youtube")}
+            className={`group relative p-p-4 sm:p-5 md:p-6 rounded-3xl border-2 transition-all duration-300 text-left overflow-hidden backdrop-blur-sm ${
+              activeTab === "youtube"
+                ? "border-red-500 bg-gradient-to-r from-red-600/20 via-pink-600/20 to-rose-700/20 shadow-2xl"
+                : "border-gray-600/50 bg-gradient-to-r from-gray-800/60 to-slate-800/60 hover:border-gray-500/70 hover:shadow-xl"
+            }`}
+          >
+            <div className="relative z-10 flex items-center gap-4">
+              <div className={`p-4 rounded-2xl shadow-lg transition-all duration-300 ${
                 activeTab === "youtube"
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-slate-500 dark:text-slate-400"
-              }`}
-            />
-            <div>
-              <h3
-                className={`font-medium ${
+                  ? "bg-gradient-to-r from-red-600 to-pink-600 animate-pulse"
+                  : "bg-gradient-to-r from-gray-700 to-slate-700 group-hover:from-gray-600 group-hover:to-slate-600"
+              }`}>
+                <Youtube className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h3 className={`text-xl font-bold mb-2 transition-colors ${
                   activeTab === "youtube"
-                    ? "text-green-900 dark:text-green-100"
-                    : "text-slate-900 dark:text-slate-100"
-                }`}
-              >
-                YouTube History
-              </h3>
-              <p
-                className={`text-sm ${
+                    ? "text-red-100"
+                    : "text-gray-100 group-hover:text-white"
+                }`}>
+                  ðŸŽ¥ YouTube Videos
+                </h3>
+                <p className={`text-sm transition-colors ${
                   activeTab === "youtube"
-                    ? "text-green-700 dark:text-green-300"
-                    : "text-slate-600 dark:text-slate-400"
-                }`}
-              >
-                Previously analyzed videos
-              </p>
+                    ? "text-red-200"
+                    : "text-gray-400 group-hover:text-gray-300"
+                }`}>
+                  Previously analyzed educational videos
+                </p>
+              </div>
             </div>
-          </div>
-        </button>
-      </div>
+            {activeTab === "youtube" && (
+              <div className="absolute inset-0 bg-gradient-to-r from-red-600/10 via-pink-600/10 to-rose-700/10 animate-pulse" />
+            )}
+          </button>
+        </div>
 
-      {/* History Content */}
-      <div className="space-y-4">
-        {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
-            <span className="ml-2 text-slate-600 dark:text-slate-400">
-              Loading...
-            </span>
-          </div>
-        ) : activeTab === "pdf" ? (
-          pdfHistory.length === 0 ? (
-            <div className="text-center py-8">
-              <FileText className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-              <p className="text-slate-500 dark:text-slate-400">
-                No PDFs uploaded yet.
+        {/* Enhanced Content Area */}
+        <div className="bg-gradient-to-r from-gray-800/60 via-slate-800/60 to-gray-800/60 backdrop-blur-lg rounded-3xl shadow-2xl border border-gray-700/50 p-8">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-16">
+              <div className="relative">
+                <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-500/30 border-t-blue-500 shadow-lg"></div>
+                <div className="absolute inset-0 animate-ping rounded-full h-16 w-16 border-4 border-blue-400/20"></div>
+              </div>
+              <div className="mt-6 text-center">
+                <p className="text-xl font-medium text-gray-300 mb-2">Loading your content...</p>
+                <p className="text-gray-500">âœ¨ Preparing your learning history</p>
+              </div>
+            </div>
+          ) : activeTab === "pdf" ? (
+            pdfHistory.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="relative mb-8">
+                  <div className="p-4 sm:p-5 md:p-6 bg-gradient-to-r from-blue-600/20 to-indigo-700/20 rounded-3xl inline-block">
+                    <BookOpen className="w-16 h-16 text-blue-400 animate-pulse" />
+                  </div>
+                  <div className="absolute -inset-2 bg-gradient-to-r from-blue-400/20 to-indigo-400/20 rounded-3xl blur animate-pulse"></div>
+                </div>
+                <h3 className="text-2xl font-bold text-white mb-3">ðŸ“š No PDFs Yet</h3>
+                <p className="text-gray-400 text-lg mb-2">
+                  Upload your first PDF to get started with AI analysis
+                </p>
+                <p className="text-gray-500">
+                  ðŸš€ Experience instant summaries, key insights, and smart Q&A
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="mb-6">
+                  <h3 className="text-2xl font-bold text-white mb-2">
+                    ðŸ“„ Your PDF Collection ({pdfHistory.length})
+                  </h3>
+                  <p className="text-gray-400">Click on any document to view conversation history</p>
+                </div>
+                <div className="space-y-4 max-h-96 overflow-y-auto custom-scrollbar">
+                  {pdfHistory.map((pdf, index) => (
+                    <div
+                      key={pdf.id}
+                      onClick={() => handlePdfClick(pdf)}
+                      className={`group cursor-pointer p-4 sm:p-5 md:p-6 bg-gradient-to-r from-gray-700/60 to-slate-800/60 backdrop-blur-sm rounded-2xl border border-gray-600/50 hover:border-blue-500/50 transition-all duration-300 transform hover:scale-[1.02] hover:shadow-xl ${
+                        index % 2 === 0 ? 'hover:from-blue-900/20 hover:to-indigo-900/20' : 'hover:from-purple-900/20 hover:to-pink-900/20'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-4 mb-4">
+                            <div className={`p-3 rounded-xl shadow-lg transition-all duration-300 ${
+                              index % 2 === 0 
+                                ? 'bg-gradient-to-r from-blue-600 to-indigo-700 group-hover:from-blue-500 group-hover:to-indigo-600' 
+                                : 'bg-gradient-to-r from-purple-600 to-pink-700 group-hover:from-purple-500 group-hover:to-pink-600'
+                            }`}>
+                              <FileText className="w-5 h-5 text-white" />
+                            </div>
+                            <div className="flex-1">
+                              <h4 className="font-bold text-white text-lg mb-1 group-hover:text-blue-200 transition-colors truncate">
+                                {pdf.file_name}
+                              </h4>
+                              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 text-sm text-gray-400">
+                                <div className="flex items-center gap-2">
+                                  <Clock className="w-4 h-4" />
+                                  <span>
+                                    {new Date(pdf.upload_time).toLocaleDateString('en-US', {
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <MessageSquare className="w-4 h-4" />
+                                  <span>
+                                    {pdf.conversation_count} conversation{pdf.conversation_count !== 1 ? 's' : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="ml-6 flex flex-col items-end gap-3">
+                          <div className={`px-4 py-2 rounded-full text-sm font-medium shadow-lg ${
+                            index % 2 === 0
+                              ? 'bg-gradient-to-r from-blue-600/20 to-indigo-700/20 text-blue-300 border border-blue-500/30'
+                              : 'bg-gradient-to-r from-purple-600/20 to-pink-700/20 text-purple-300 border border-purple-500/30'
+                          }`}>
+                            ðŸ’¬ {pdf.conversation_count} chat{pdf.conversation_count !== 1 ? 's' : ''}
+                          </div>
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(pdf.id);
+                            }}
+                            className="group/btn flex items-center gap-2 px-4 py-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-xl transition-all duration-200 border border-red-500/30 hover:border-red-400/50"
+                          >
+                            <Trash2 className="w-4 h-4 group-hover/btn:animate-pulse" />
+                            <span className="text-sm font-medium">Delete</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          ) : ytHistory.length === 0 ? (
+            <div className="text-center py-16">
+              <div className="relative mb-8">
+                <div className="p-4 sm:p-5 md:p-6 bg-gradient-to-r from-red-600/20 to-pink-700/20 rounded-3xl inline-block">
+                  <Youtube className="w-16 h-16 text-red-400 animate-pulse" />
+                </div>
+                <div className="absolute -inset-2 bg-gradient-to-r from-red-400/20 to-pink-400/20 rounded-3xl blur animate-pulse"></div>
+              </div>
+              <h3 className="text-2xl font-bold text-white mb-3">ðŸŽ¥ No Videos Yet</h3>
+              <p className="text-gray-400 text-lg mb-2">
+                Analyze your first YouTube video to get started
               </p>
-              <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">
-                Upload your first PDF to get started
+              <p className="text-gray-500">
+                ðŸš€ Get instant summaries, timestamps, and key insights
               </p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-72 overflow-y-auto custom-scrollbar">
-              {pdfHistory.map((pdf) => (
-                <div
-                  key={pdf.id}
-                  onClick={() => handlePdfClick(pdf)}
-                  className="cursor-pointer p-4 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors duration-200"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <FileText className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />
-                        <h4 className="font-medium text-slate-900 dark:text-slate-100 truncate">
-                          {pdf.file_name}
-                        </h4>
-                      </div>
-                      <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
-                        <div className="flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          <span>
-                            {new Date(pdf.upload_time).toLocaleString()}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <MessageSquare className="w-3 h-3" />
-                          <span>
-                            {pdf.conversation_count} chat
-                            {pdf.conversation_count !== 1 ? "s" : ""}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="ml-4 flex flex-col items-end gap-2">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                        {pdf.conversation_count} chat
-                        {pdf.conversation_count !== 1 ? "s" : ""}
-                      </span>
-
-                      {/* Delete Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(pdf.id);
-                        }}
-                        className="text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        ) : ytHistory.length === 0 ? (
-          <div className="text-center py-8">
-            <Youtube className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-            <p className="text-slate-500 dark:text-slate-400">
-              No YouTube videos analyzed yet.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-3 max-h-72 overflow-y-auto custom-scrollbar">
-            {ytHistory.map((video) => (
-              <div
-                key={video.id}
-                onClick={() => handleYouTubeClick(video)}
-                className="cursor-pointer p-4 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors duration-200"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2">
-                      <img
-                        src={video.thumbnail_url}
-                        alt="thumbnail"
-                        className="w-16 h-10 object-cover rounded-sm"
-                      />
-                      <div>
-                        <h4 className="font-medium text-slate-900 dark:text-slate-100 truncate">
-                          {video.video_title}
-                        </h4>
-                        <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
-                          <div className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            <span>
-                              {new Date(video.upload_time).toLocaleString()}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <MessageSquare className="w-3 h-3" />
-                            <span>
-                              {video.conversation_count} chat
-                              {video.conversation_count !== 1 ? "s" : ""}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="ml-4 flex flex-col items-end gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteYT(video.id);
-                      }}
-                      className="text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
+            <div className="space-y-4">
+              <div className="mb-6">
+                <h3 className="text-2xl font-bold text-white mb-2">
+                  ðŸŽ¥ Your Video Collection ({ytHistory.length})
+                </h3>
+                <p className="text-gray-400">Click on any video to view conversation history</p>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="space-y-4 max-h-96 overflow-y-auto custom-scrollbar">
+                {ytHistory.map((video, index) => (
+                  <div
+                    key={video.id}
+                    onClick={() => handleYouTubeClick(video)}
+                    className={`group cursor-pointer p-4 sm:p-5 md:p-6 bg-gradient-to-r from-gray-700/60 to-slate-800/60 backdrop-blur-sm rounded-2xl border border-gray-600/50 hover:border-red-500/50 transition-all duration-300 transform hover:scale-[1.02] hover:shadow-xl ${
+                      index % 2 === 0 ? 'hover:from-red-900/20 hover:to-pink-900/20' : 'hover:from-orange-900/20 hover:to-red-900/20'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="relative">
+                            <img
+                              src={video.thumbnail_url}
+                              alt="Video thumbnail"
+                              className="w-24 h-16 object-cover rounded-xl shadow-lg border border-gray-600/50"
+                            />
+                            <div className="absolute inset-0 bg-black/30 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                              <Play className="w-6 h-6 text-white" />
+                            </div>
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="font-bold text-white text-lg mb-1 group-hover:text-red-200 transition-colors line-clamp-2">
+                              {video.video_title}
+                            </h4>
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6 text-sm text-gray-400">
+                              <div className="flex items-center gap-2">
+                                <Clock className="w-4 h-4" />
+                                <span>
+                                  {new Date(video.upload_time).toLocaleDateString('en-US', {
+                                    year: 'numeric',
+                                    month: 'short',
+                                    day: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                  })}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <MessageSquare className="w-4 h-4" />
+                                <span>
+                                  {video.conversation_count} conversation{video.conversation_count !== 1 ? 's' : ''}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="ml-6 flex flex-col items-end gap-3">
+                        <div className={`px-4 py-2 rounded-full text-sm font-medium shadow-lg ${
+                          index % 2 === 0
+                            ? 'bg-gradient-to-r from-red-600/20 to-pink-700/20 text-red-300 border border-red-500/30'
+                            : 'bg-gradient-to-r from-orange-600/20 to-red-700/20 text-orange-300 border border-orange-500/30'
+                        }`}>
+                          ðŸ’¬ {video.conversation_count} chat{video.conversation_count !== 1 ? 's' : ''}
+                        </div>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteYT(video.id);
+                          }}
+                          className="group/btn flex items-center gap-2 px-4 py-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-xl transition-all duration-200 border border-red-500/30 hover:border-red-400/50"
+                        >
+                          <Trash2 className="w-4 h-4 group-hover/btn:animate-pulse" />
+                          <span className="text-sm font-medium">Delete</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </section>
+    </div>
   );
 };
 
 export default Model2history;
-
 
 
 ================================================
@@ -4126,6 +4330,7 @@ import {
   CheckCircle,
   Link as LinkIcon,
   FileText,
+  Brain,
 } from "lucide-react";
 
 import YouTube from "react-youtube";
@@ -4140,6 +4345,7 @@ import { useState, useMemo } from "react";
 import { askPdfQuestion, askYoutubeQuestion } from "../utils/contentScan"; // Adjust the import path as needed
 
 const API_BASE = import.meta.env.VITE_API_BASE;
+
 function Model2results({
   file,
   url,
@@ -4156,9 +4362,12 @@ function Model2results({
 
   const { jumpToHighlightArea } = highlightPluginInstance;
   const [player, setPlayer] = useState(null);
+  const [isAnswerLoading, setIsAnswerLoading] = useState(false);
 
   const [question, setQuestion] = useState("");
   const [videoStartTime, setVideoStartTime] = useState(0);
+  const [thinkingText, setThinkingText] = useState("");
+  const fullThinkingText = "Thinking...";
 
   const [messages, setMessages] = useState([
     {
@@ -4168,14 +4377,13 @@ function Model2results({
       }. What would you like to know about it?`,
     },
   ]);
-  console.log(response);
 
   const handleSend = async () => {
     if (!question.trim()) return;
 
     const userMessage = { type: "user", text: question };
     setMessages((prev) => [...prev, userMessage]);
-    setIsLoading(true);
+    setIsAnswerLoading(true);
 
     try {
       let res;
@@ -4185,29 +4393,55 @@ function Model2results({
       } else if (mode === "yt") {
         const videoId = response?.data?.id;
         res = await askYoutubeQuestion(videoId, question);
-        console.log("Response from YouTube question:", res);
       }
 
-      const aiAnswer = res?.data?.answer || "No response from server.";
+      const rawAnswer = res?.data?.answer || "No response from server.";
       const refs = res?.data?.references || [];
+      const thinking = res?.data?.thinking_process || "";
 
-      setMessages((prev) => [
-        ...prev,
-        { type: "ai", text: aiAnswer },
-        ...(refs.length > 0
-          ? [{ type: "reference-list", references: refs }]
-          : []),
-      ]);
+      
+
+      const extractTagContent = (tag, text) => {
+        const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
+        const matches = [];
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          matches.push(match[1].trim());
+        }
+        return matches.length > 0 ? matches.join("\n") : null;
+      };
+
+      const answerOnly = extractTagContent("answer", rawAnswer);
+      const thinkingText = extractTagContent("think", rawAnswer);
+
+      const newMessages = [];
+
+      // Add thinking message first if it exists
+      if (thinking) {
+        newMessages.push({ type: "think", text: thinking });
+      }
+
+      // Add the answer message
+      newMessages.push({ type: "ai", text: answerOnly || rawAnswer });
+
+      // Add references if they exist
+      if (refs.length > 0) {
+        newMessages.push({ type: "reference-list", references: refs });
+      }
+
+      setMessages((prev) => [...prev, ...newMessages]);
     } catch (err) {
+      console.error("Error getting answer:", err);
       setMessages((prev) => [
         ...prev,
         { type: "ai", text: "⚠️ Error getting answer." },
       ]);
     } finally {
-      setIsLoading(false);
+      setIsAnswerLoading(false);
       setQuestion("");
     }
   };
+
   // Function to extract YouTube video ID from URL
   function getYoutubeVideoId(url) {
     try {
@@ -4222,6 +4456,7 @@ function Model2results({
       return null;
     }
   }
+
   // Converts timestamp string like "01:30" or "00:01:30" to seconds
   function timeToSeconds(timeStr) {
     const parts = timeStr.split(":").map(Number).reverse();
@@ -4239,46 +4474,52 @@ function Model2results({
   };
 
   return (
-    <section className="w-auto h-auto bg-white dark:bg-slate-800 overflow-hidden">
+    <section className="w-full h-full flex flex-col bg-gradient-to-br from-gray-900 via-slate-900 to-gray-800 overflow-hidden">
       {/* Header with Back Button */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-700">
-        <div className="flex items-center gap-4">
-          <div className="p-2 bg-gradient-to-r from-green-500 to-teal-600 rounded-lg">
-            <CheckCircle className="w-5 h-5 text-white" />
+      <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 p-4 border-b border-blue-400/20 shadow-xl">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-white/20 backdrop-blur-lg rounded-xl p-2 shadow-md">
+              <CheckCircle className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-white bg-gradient-to-r from-white to-blue-100 bg-clip-text text-transparent">
+                AI Analysis Results
+              </h2>
+              <p className="text-blue-100 text-sm font-normal">
+                {mode === "pdf" ? `${file?.name}` : "YouTube video analysis"}
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
-              Analysis Results
-            </h2>
-            <p className="text-slate-600 dark:text-slate-400 text-sm">
-              {mode === "pdf" ? `${file?.name}` : "YouTube video analysis"}
-            </p>
-          </div>
+          <button
+            onClick={onNewScan}
+            className="flex items-center gap-2 px-4 py-2 text-blue-100 hover:text-white hover:bg-white/15 transition-all duration-200 rounded-lg backdrop-blur-sm border border-white/20 text-sm font-medium"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            New Scan
+          </button>
         </div>
-        <button
-          onClick={onNewScan}
-          className="flex items-center gap-2 px-3 py-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          New Scan
-        </button>
       </div>
 
       {/* Two-Panel Layout */}
-      <div className="flex h-[calc(100vh-80px)] min-h-0">
+      <div className="flex h-[calc(100vh-120px)] min-h-0">
         {/* Left Panel - Chat Section */}
-        <div className="flex flex-col h-full w-3/5 min-w-0 border-r border-slate-200 dark:border-slate-700">
+        <div className="flex flex-col h-full w-3/5 min-w-0 border-r border-gray-700/50 bg-gradient-to-br from-gray-800 to-slate-800">
           {/* Chat Messages Area */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
+          <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0 bg-gradient-to-b from-gray-800/50 to-slate-800/50 custom-scrollbar">
             <div className="space-y-4">
               {messages.map((msg, index) => {
                 if (msg.type === "reference-list") {
                   return (
                     <div
                       key={index}
-                      className="text-sm text-slate-800 dark:text-slate-100"
+                      className="text-sm text-gray-100 space-y-3"
                     >
-                      <div className="mt-3 space-y-2">
+                      <div className="flex items-center gap-2 text-indigo-300 font-semibold">
+                        <LinkIcon className="w-4 h-4" />
+                        <span>References Found</span>
+                      </div>
+                      <div className="space-y-2">
                         {msg.references.map((ref) => (
                           <button
                             key={ref.chunk_id}
@@ -4299,16 +4540,31 @@ function Model2results({
                                 handleSeek(startTime);
                               }
                             }}
-                            className="block text-blue-600 dark:text-blue-400 hover:underline text-left w-full break-words p-2 rounded bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                            className="block text-left w-full break-words p-4 rounded-2xl bg-gradient-to-r from-indigo-900/40 to-purple-900/40 hover:from-indigo-900/60 hover:to-purple-900/60 transition-all duration-300 border border-indigo-500/30 hover:border-indigo-400/50 shadow-lg hover:shadow-xl transform hover:scale-102 backdrop-blur-sm"
                           >
-                            {mode === "pdf"
-                              ? `🔗 Page ${ref.page}: ${ref.preview.slice(
-                                  0,
-                                  120
-                                )}...`
-                              : `⏱️ Timestamp: ${
-                                  ref.timestamp.start
-                                }s – ${ref.text.slice(0, 120)}...`}
+                            <div className="flex items-start gap-3">
+                              <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center shadow-md">
+                                {mode === "pdf" ? (
+                                  <FileText className="w-4 h-4 text-white" />
+                                ) : (
+                                  <span className="text-white font-bold text-xs">
+                                    ⏱️
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-indigo-200 font-medium text-sm">
+                                  {mode === "pdf"
+                                    ? `Page ${ref.page}`
+                                    : `Timestamp: ${ref.timestamp.start}s`}
+                                </div>
+                                <div className="text-gray-300 text-sm mt-1 line-clamp-2">
+                                  {mode === "pdf"
+                                    ? `${ref.preview.slice(0, 120)}...`
+                                    : `${ref.text.slice(0, 120)}...`}
+                                </div>
+                              </div>
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -4326,16 +4582,84 @@ function Model2results({
                     <div
                       className={`${
                         msg.type === "user"
-                          ? "bg-green-100 dark:bg-green-700"
-                          : "bg-slate-100 dark:bg-slate-700"
-                      } rounded-lg p-4 max-w-[85%] min-w-0`}
+                          ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg"
+                          : msg.type === "think"
+                          ? "bg-gradient-to-r from-blue-500/20 to-purple-500/20 text-gray-100 shadow-lg border-blue-400/40 backdrop-blur-sm"
+                          : "bg-gradient-to-r from-gray-700 to-slate-700 text-gray-100 shadow-lg"
+                      } rounded-2xl p-5 max-w-[85%] min-w-0 border ${
+                        msg.type === "user"
+                          ? "border-emerald-400/30"
+                          : msg.type === "think"
+                          ? "border-blue-400/50"
+                          : "border-gray-600/50"
+                      } ${msg.type === "think" ? "relative" : ""}`}
                     >
-                      {msg.type === "ai" ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none text-slate-900 dark:text-slate-100 break-words overflow-x-auto">
-                          <ReactMarkdown>{msg.text}</ReactMarkdown>
+                      {msg.type === "think" && (
+                        <div className="flex items-center gap-2 mb-3 text-blue-300">
+                          <Brain className="w-4 h-4" />
+                          <span className="text-xs font-semibold uppercase tracking-wide">
+                            AI Thinking Process
+                          </span>
+                        </div>
+                      )}
+                      {msg.type === "ai" || msg.type === "think" ? (
+                        <div className="prose prose-sm prose-invert max-w-none break-words overflow-wrap-anywhere whitespace-pre-wrap">
+                          <ReactMarkdown
+                            components={{
+                              p: ({ node, ...props }) => (
+                                <p
+                                  className={`${
+                                    msg.type === "think"
+                                      ? "text-gray-200"
+                                      : "text-white"
+                                  }`}
+                                  {...props}
+                                />
+                              ),
+                              strong: ({ node, ...props }) => (
+                                <strong
+                                  className={
+                                    msg.type === "think" ? "text-blue-200" : ""
+                                  }
+                                  {...props}
+                                />
+                              ),
+                              em: ({ node, ...props }) => (
+                                <em
+                                  className={
+                                    msg.type === "think" ? "text-blue-300" : ""
+                                  }
+                                  {...props}
+                                />
+                              ),
+                              code: ({ node, inline, ...props }) =>
+                                inline ? (
+                                  <code
+                                    className={`${
+                                      msg.type === "think"
+                                        ? "text-blue-100 bg-blue-900/30 px-1 rounded"
+                                        : ""
+                                    }`}
+                                    {...props}
+                                  />
+                                ) : (
+                                  <pre
+                                    className={`${
+                                      msg.type === "think"
+                                        ? "bg-blue-900/20 border border-blue-500/30 p-2 rounded"
+                                        : ""
+                                    }`}
+                                  >
+                                    <code {...props} />
+                                  </pre>
+                                ),
+                            }}
+                          >
+                            {msg.text}
+                          </ReactMarkdown>
                         </div>
                       ) : (
-                        <p className="text-sm text-slate-900 dark:text-slate-100 break-words">
+                        <p className="text-sm font-medium break-words whitespace-pre-wrap overflow-wrap-anywhere">
                           {msg.text}
                         </p>
                       )}
@@ -4344,12 +4668,36 @@ function Model2results({
                 );
               })}
 
-              {isLoading && (
+              {isAnswerLoading && (
                 <div className="flex justify-start">
-                  <div className="bg-slate-100 dark:bg-slate-700 rounded-lg p-4 max-w-[85%] min-w-0">
-                    <p className="text-sm text-slate-900 dark:text-slate-100">
-                      Thinking...
-                    </p>
+                  <div className="bg-gradient-to-r from-gray-700/40 to-slate-700/40 rounded-2xl p-5 max-w-[85%] min-w-0 backdrop-blur-sm border border-gray-600/30 shadow-inner relative overflow-hidden group">
+                    <div className="flex items-center gap-3">
+                      <div className="flex space-x-1">
+                        <span
+                          className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"
+                          style={{ animationDelay: "0s" }}
+                        ></span>
+                        <span
+                          className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"
+                          style={{ animationDelay: "0.2s" }}
+                        ></span>
+                        <span
+                          className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                          style={{ animationDelay: "0.4s" }}
+                        ></span>
+                      </div>
+                      <p className="text-sm text-gray-400 font-medium">
+                        Thinking...
+                      </p>
+                    </div>
+                    <div className="absolute top-2 right-3 opacity-30 group-hover:opacity-80 transition duration-300">
+                      <button
+                        onClick={() => setIsAnswerLoading(false)}
+                        className="text-xs text-gray-400 hover:text-gray-200 transition"
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -4357,20 +4705,21 @@ function Model2results({
           </div>
 
           {/* Chat Input */}
-          <div className="flex-shrink-0 p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700">
+          <div className="flex-shrink-0 p-6 border-t border-gray-700/50 bg-gradient-to-r from-gray-800 to-slate-800">
             <div className="flex gap-3">
               <input
                 type="text"
                 value={question}
+                disabled={isAnswerLoading}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 placeholder="Ask a question about the content..."
-                className="flex-1 min-w-0 p-3 border border-slate-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm"
+                className="flex-1 min-w-0 p-4 border border-gray-600/50 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gradient-to-r from-gray-700 to-slate-700 text-gray-100 placeholder-gray-400 text-sm font-medium backdrop-blur-sm shadow-lg transition-all duration-200 hover:shadow-xl"
               />
               <button
+                disabled={isAnswerLoading}
                 onClick={handleSend}
-                disabled={isLoading}
-                className="flex-shrink-0 px-6 py-3 bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="flex-shrink-0 px-8 py-4 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white rounded-2xl transition-all duration-300 disabled:opacity-50 shadow-lg hover:shadow-xl transform hover:scale-105 font-bold border border-blue-400/30"
               >
                 Send
               </button>
@@ -4379,14 +4728,14 @@ function Model2results({
         </div>
 
         {/* Right Panel - Content Display */}
-        <div className="w-2/5 flex flex-col min-w-0">
+        <div className="w-2/5 flex flex-col min-w-0 bg-gradient-to-br from-gray-800 to-slate-800">
           {/* Content Display Area */}
           <div className="flex-1 overflow-hidden min-h-0">
             {mode === "pdf" ? (
-              <div className="h-full bg-slate-100 dark:bg-slate-700 overflow-y-auto">
+              <div className="h-full bg-gradient-to-br from-gray-800 to-slate-800 overflow-y-auto rounded-l-3xl border-l border-gray-700/50">
                 {file ? (
                   <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
-                    <div className="h-full overflow-y-auto bg-white dark:bg-slate-800">
+                    <div className="h-full overflow-y-auto bg-white rounded-l-3xl shadow-2xl">
                       <Viewer
                         ref={viewerRef}
                         fileUrl={fileUrl}
@@ -4395,45 +4744,48 @@ function Model2results({
                           highlightPluginInstance,
                         ]}
                         renderLoader={(percentages) => (
-                          <div className="flex items-center justify-center h-full">
+                          <div className="flex items-center justify-center h-full bg-gradient-to-br from-gray-800 to-slate-800">
                             <div className="text-center">
-                              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-green-500 mb-2"></div>
-                              <div className="text-sm text-slate-500 dark:text-slate-400">
-                                Loading PDF... {Math.round(percentages)}%
+                              <div className="relative mb-4">
+                                <div className="bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-600 rounded-full p-4 shadow-lg">
+                                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+                                </div>
+                                <div className="absolute inset-0 bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-600 rounded-full animate-pulse opacity-30"></div>
+                              </div>
+                              <div className="text-lg font-bold text-white mb-2">
+                                Loading PDF Analysis
+                              </div>
+                              <div className="text-blue-200 font-medium">
+                                {Math.round(percentages)}% complete
                               </div>
                             </div>
                           </div>
                         )}
                         theme={{
-                          theme: "auto", // This will auto-detect based on your page theme
+                          theme: "auto",
                         }}
                       />
                     </div>
                   </Worker>
                 ) : (
-                  <div className="text-center text-slate-500 dark:text-slate-400 h-full flex items-center justify-center">
-                    <div>
-                      <svg
-                        className="w-12 h-12 mx-auto mb-2 text-slate-400"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                        />
-                      </svg>
-                      <p>PDF not loaded</p>
+                  <div className="text-center text-gray-300 h-full flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="bg-gradient-to-r from-gray-600 to-slate-600 rounded-2xl p-6 shadow-lg backdrop-blur-sm border border-gray-500/30 mb-4">
+                        <FileText className="w-12 h-12 mx-auto text-gray-400" />
+                      </div>
+                      <p className="text-lg font-medium text-gray-300">
+                        PDF not loaded
+                      </p>
+                      <p className="text-gray-400 text-sm mt-2">
+                        Please upload a PDF file to analyze
+                      </p>
                     </div>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="h-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center">
-                <div className="w-full h-full">
+              <div className="h-full bg-gradient-to-br from-gray-800 to-slate-800 flex items-center justify-center rounded-l-3xl border-l border-gray-700/50">
+                <div className="w-full h-full rounded-l-3xl overflow-hidden shadow-2xl">
                   {url ? (
                     <YouTube
                       videoId={getYoutubeVideoId(url)}
@@ -4448,8 +4800,30 @@ function Model2results({
                       className="w-full h-full"
                     />
                   ) : (
-                    <div className="text-center text-slate-500 dark:text-slate-400">
-                      No video URL provided.
+                    <div className="text-center text-gray-300 h-full flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="bg-gradient-to-r from-red-600 to-pink-600 rounded-2xl p-6 shadow-lg backdrop-blur-sm border border-red-400/30 mb-4">
+                          <svg
+                            className="w-12 h-12 mx-auto text-white"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1.5a2.5 2.5 0 110 5H9m4.5-1.206a11.955 11.955 0 01-2.5 2.5"
+                            />
+                          </svg>
+                        </div>
+                        <p className="text-lg font-medium text-gray-300">
+                          No video URL provided
+                        </p>
+                        <p className="text-gray-400 text-sm mt-2">
+                          Please provide a YouTube URL to analyze
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -4463,6 +4837,7 @@ function Model2results({
 }
 
 export default Model2results;
+
 
 
 ================================================
@@ -5083,6 +5458,8 @@ function ResultsView({
 }) {
   const [loading, setLoading] = useState(false);
   const [quizLoading, setQuizLoading] = useState(false);
+  const [showQuizNotice, setShowQuizNotice] = useState(false);
+
   const navigate = useNavigate();
   const { setQuestions, setUserAnswers, setCurrent, setShowResults } =
     useQuiz();
@@ -5134,32 +5511,60 @@ function ResultsView({
   };
 
   const handleGenerateQuiz = async () => {
-    console.log("Generating quiz for these videos:", videos);
-    setQuizLoading(true); // start loading
+    // setShowQuizNotice(true);
+    // console.log("Generating quiz for these videos:", videos);
+     setQuizLoading(true); // start loading
 
-    try {
-      const res = await generateMultiVideoMCQs(videos);
-      if (res.error) {
-        setError(res.error);
-      } else {
-        console.log("Quiz generated successfully:", res);
-        setQuestions(res.questions);
-        setUserAnswers({});
-        setCurrent(0);
-        navigate("/quiz");
-      }
-    } catch (err) {
-      setError(err.message || "Failed to generate quiz");
-    } finally {
-      setQuizLoading(false); // stop loading
-    }
+     try {
+       const res = await generateMultiVideoMCQs(videos);
+       if (res.error) {
+         setError(res.error);
+       } else {
+         console.log("Quiz generated successfully:", res);
+         setQuestions(res.questions);
+         setUserAnswers({});
+         setCurrent(0);
+         navigate("/quiz");
+       }
+     } catch (err) {
+       setError(err.message || "Failed to generate quiz");
+     } finally {
+       setQuizLoading(false); // stop loading
+     }
   };
 
   return (
     <div className="min-h-screen p-6 overflow-x-hidden">
       {quizLoading && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center">
-            <QuizLoading />
+          <QuizLoading />
+        </div>
+      )}
+      {showQuizNotice && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+          <div className="max-w-lg w-full bg-gradient-to-br from-yellow-900 to-orange-900 border border-yellow-500/30 rounded-3xl p-8 shadow-2xl text-white space-y-6 relative">
+            <button
+              onClick={() => setShowQuizNotice(false)}
+              className="absolute top-3 right-4 text-yellow-300 hover:text-white text-lg font-bold"
+            >
+              ✖
+            </button>
+            <div className="flex items-center gap-4">
+              <div className="bg-yellow-600 p-3 rounded-full">
+                <AlertCircle className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-yellow-200">
+                  ⚠️ Quiz Generation Unavailable
+                </h2>
+                <p className="text-yellow-100 mt-1">
+                  Due to memory limits on the current server deployment, quiz
+                  generation is temporarily disabled. We're working on
+                  optimizing resources. Please check back soon.
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -5426,6 +5831,7 @@ import { highlightPlugin } from "@react-pdf-viewer/highlight";
 import "@react-pdf-viewer/core/lib/styles/index.css";
 import "@react-pdf-viewer/default-layout/lib/styles/index.css";
 import Model2history from "./Model2history";
+import ScannerLoading from "./ScannerLoading";
 
 import { fetchUserPDFList } from "../utils/contentScan";
 import {
@@ -5437,22 +5843,30 @@ import {
   ScanLine,
   CheckCircle,
   ArrowLeft,
+  Sparkles,
+  Brain,
+  Zap,
+  Target,
+  PlayCircle,
+  BookOpen,
+  Shield,
+  Lightbulb,
 } from "lucide-react";
 import Model2results from "./Model2results";
 
 /**
  * If you're working with Django + CSRF, keep your existing util:
  *   import { getCsrfToken } from "../utils/api";
- * and add an Xâ€‘CSRFToken header the same way you already do.
+ * and add an X‑CSRFToken header the same way you already do.
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
 /**
  * Endpoints (adjust to match your backend):
- *   POST `${API_BASE}/analyze/pdf`   â€“ multipart/formâ€‘data with key `file`
- *   POST `${API_BASE}/analyze/yt`    â€“ JSON { "url": "<YouTube link>" }
- * Your backend should return JSON like { ok: true, data: â€¦ } or { error: "â€¦" }.
+ *   POST `${API_BASE}/analyze/pdf`   – multipart/form‑data with key `file`
+ *   POST `${API_BASE}/analyze/yt`    – JSON { "url": "<YouTube link>" }
+ * Your backend should return JSON like { ok: true, data: … } or { error: "…" }.
  */
 
 function Scanner() {
@@ -5462,6 +5876,8 @@ function Scanner() {
   const [isLoading, setIsLoading] = useState(false);
   const [response, setResponse] = useState(null); // Backend result
   const [error, setError] = useState("");
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [isLoaded, setIsLoaded] = useState(false);
   const viewerRef = useRef(null);
 
   const [activeTab, setActiveTab] = useState("form");
@@ -5476,32 +5892,60 @@ function Scanner() {
   ]); // "form" | "results"
   const defaultLayoutPluginInstance = defaultLayoutPlugin();
 
+  // Enhanced mode options with better descriptions and icons
   const modeOptions = [
     {
       value: "pdf",
       label: "PDF Document",
       icon: FileText,
-      description: "Analyze PDF files for content extraction",
+      description: "Transform PDFs into interactive learning experiences",
       placeholder: "Choose a PDF file to analyze",
+      gradient: "from-orange-500 via-red-500 to-pink-600",
+      emoji: "📄",
+      features: [
+        "Extract key concepts",
+        "Generate summaries",
+        "Create study guides",
+        "Auto-highlight important text",
+      ],
     },
     {
       value: "yt",
       label: "YouTube Video",
-      icon: LinkIcon,
-      description: "Extract information from YouTube videos",
+      icon: PlayCircle,
+      description: "Convert video content into structured knowledge",
       placeholder: "https://www.youtube.com/watch?v=...",
+      gradient: "from-red-500 via-pink-500 to-purple-600",
+      emoji: "🎥",
+      features: [
+        "Auto-generate timestamps",
+        "Extract transcripts",
+        "Create chapter summaries",
+        "Generate quiz questions",
+      ],
     },
   ];
+
   const fileUrl = useMemo(
     () => (file ? URL.createObjectURL(file) : null),
     [file]
   );
 
   useEffect(() => {
+    setIsLoaded(true);
+    const handleMouseMove = (e) => {
+      setMousePosition({ x: e.clientX, y: e.clientY });
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
+  useEffect(() => {
     if (viewerRef.current) {
       viewerRef.current.zoom(SpecialZoomLevel.ActualSize); // 100% zoom
     }
   }, [fileUrl]);
+
   const highlightPluginInstance = highlightPlugin();
   const { jumpToHighlightArea, highlightAreas, setHighlightAreas } =
     highlightPluginInstance;
@@ -5511,7 +5955,6 @@ function Scanner() {
     const selectedFile = e.target.files[0] ?? null;
     setFile(selectedFile);
     console.log("Selected file:", selectedFile);
-
     setError("");
   };
 
@@ -5529,43 +5972,43 @@ function Scanner() {
     setError("");
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setResponse(null);
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  setError("");
+  setResponse(null);
 
-    try {
-      if (mode === "pdf") {
-        if (!file) return setError("Please choose a PDF file to analyze.");
-        let data = await uploadPdf(file);
-        setIsLoading(true);
-        setResponse(data);
-        setActiveTab("results");
-        return;
-      }
-
-      if (mode === "yt") {
-        if (!url.trim())
-          return setError("Please paste a YouTube link to analyze.");
-        let data = await analyzeYoutube(url);
-        setIsLoading(true);
-        console.log("YouTube analysis response:", data);
-
-        setResponse(data);
-        setActiveTab("results");
-        return;
-      }
-    } catch (err) {
-      console.error(err);
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          "Something went wrong. Please try again."
-      );
-    } finally {
-      setIsLoading(false);
+  try {
+    if (mode === "pdf") {
+      if (!file) return setError("Please choose a PDF file to analyze.");
+      setIsLoading(true); // <-- Move it here
+      let data = await uploadPdf(file);
+      setResponse(data);
+      setActiveTab("results");
+      return;
     }
-  };
+
+    if (mode === "yt") {
+      if (!url.trim())
+        return setError("Please paste a YouTube link to analyze.");
+      setIsLoading(true); // <-- Move it here
+      let data = await analyzeYoutube(url);
+      console.log("YouTube analysis response:", data);
+      setResponse(data);
+      setActiveTab("results");
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    setError(
+      err.response?.data?.error ||
+        err.message ||
+        "Something went wrong. Please try again."
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
+
 
   const getCurrentModeConfig = () => {
     return modeOptions.find((option) => option.value === mode);
@@ -5583,177 +6026,469 @@ function Scanner() {
   const prettyJson = (json) => JSON.stringify(json, null, 2);
 
   return (
-    <div className="space-y-6">
-      {/* ---------------- TAB 1 : SCANNER FORM ---------------- */}
-      {activeTab === "form" && (
-        <section className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border p-6 space-y-6">
-          {/* Header */}
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-gradient-to-r from-green-500 to-teal-600 rounded-lg">
-              <ScanLine className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
-                AI Content Scanner
-              </h2>
-              <p className="text-slate-600 dark:text-slate-400">
-                Analyze PDFs and YouTube videos with AI-powered extraction
-              </p>
-            </div>
-          </div>
+    <div className="min-h-screen  text-white overflow-hidden">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm">
+          <ScannerLoading 
+            mode={mode} 
+            fileName={file?.name} 
+            url={url} 
+          />
+        </div>
+      )}
 
-          {/* Mode Selection */}
-          <div className="space-y-3">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Content Type
-            </label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {modeOptions.map((option) => {
-                const Icon = option.icon;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => handleModeChange(option.value)}
-                    className={`p-4 rounded-lg border-2 transition-all duration-200 text-left ${
-                      mode === option.value
-                        ? "border-green-500 bg-green-50 dark:bg-green-900/20"
-                        : "border-slate-300 dark:border-slate-600 hover:border-slate-400 dark:hover:border-slate-500"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Icon
-                        className={`w-5 h-5 ${
+
+      {/* Animated Background */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div
+          className="absolute w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"
+          style={{
+            left: mousePosition.x - 192,
+            top: mousePosition.y - 192,
+            transition: "all 0.3s ease-out",
+          }}
+        />
+        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-purple-500/5 rounded-full blur-2xl animate-pulse delay-1000" />
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-indigo-500/5 rounded-full blur-3xl animate-pulse delay-2000" />
+      </div>
+
+      <div className="relative space-y-8 w-full">
+        {/* ---------------- TAB 1 : SCANNER FORM ---------------- */}
+        {activeTab === "form" && (
+          <div
+            className={`transition-all duration-1000 ${
+              isLoaded
+                ? "opacity-100 translate-y-0"
+                : "opacity-0 translate-y-10"
+            }`}
+          >
+            {/* Enhanced Main Content Card */}
+            <div className="bg-gradient-to-br from-gray-800/60 to-slate-900/60 rounded-3xl shadow-2xl border border-gray-700/50 p-8 backdrop-blur-sm">
+              {/* Mode Selection with Enhanced Design */}
+              <div className="space-y-6 mb-12">
+                <div className="text-center">
+                  <h2 className="text-3xl font-bold text-white mb-2 flex items-center justify-center gap-3">
+                    <Brain className="w-8 h-8 text-blue-400" />
+                    Choose Your Content Type
+                  </h2>
+                  <p className="text-gray-300 text-lg">
+                    Select how you'd like to learn today
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {modeOptions.map((option) => {
+                    const Icon = option.icon;
+                    return (
+                      <div
+                        key={option.value}
+                        onClick={() => handleModeChange(option.value)}
+                        className={`group relative p-8 rounded-3xl border-2 transition-all duration-500 cursor-pointer transform hover:scale-105 backdrop-blur-sm ${
                           mode === option.value
-                            ? "text-green-600 dark:text-green-400"
-                            : "text-slate-500 dark:text-slate-400"
+                            ? "border-blue-500 bg-gradient-to-br from-blue-900/40 to-indigo-900/40 shadow-2xl"
+                            : "border-gray-600/50 bg-gradient-to-br from-gray-700/40 to-slate-800/40 hover:border-gray-500/70 hover:shadow-xl"
                         }`}
-                      />
-                      <div>
-                        <h3
-                          className={`font-medium ${
-                            mode === option.value
-                              ? "text-green-900 dark:text-green-100"
-                              : "text-slate-900 dark:text-slate-100"
-                          }`}
-                        >
-                          {option.label}
-                        </h3>
-                        <p
-                          className={`text-sm ${
-                            mode === option.value
-                              ? "text-green-700 dark:text-green-300"
-                              : "text-slate-600 dark:text-slate-400"
-                          }`}
-                        >
-                          {option.description}
-                        </p>
+                      >
+                        {/* Animated background for selected mode */}
+                        {mode === option.value && (
+                          <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-indigo-500/10 rounded-3xl animate-pulse" />
+                        )}
+
+                        <div className="relative">
+                          <div className="flex items-center gap-4 mb-6">
+                            <div
+                              className={`w-16 h-16 bg-gradient-to-br ${
+                                option.gradient
+                              } rounded-2xl flex items-center justify-center shadow-lg group-hover:shadow-xl transition-all duration-300 ${
+                                mode === option.value ? "animate-pulse" : ""
+                              }`}
+                            >
+                              <Icon className="w-8 h-8 text-white" />
+                            </div>
+                            <div>
+                              <h3
+                                className={`text-2xl font-bold ${
+                                  mode === option.value
+                                    ? "text-blue-100"
+                                    : "text-white group-hover:text-blue-100"
+                                } transition-colors flex items-center gap-2`}
+                              >
+                                {option.emoji} {option.label}
+                              </h3>
+                              <p
+                                className={`text-lg ${
+                                  mode === option.value
+                                    ? "text-blue-200"
+                                    : "text-gray-300 group-hover:text-blue-200"
+                                } transition-colors`}
+                              >
+                                {option.description}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Feature List */}
+                          <div className="space-y-2">
+                            {option.features.map((feature, index) => (
+                              <div
+                                key={index}
+                                className="flex items-center gap-3 text-gray-300"
+                              >
+                                <CheckCircle
+                                  className={`w-4 h-4 ${
+                                    mode === option.value
+                                      ? "text-blue-400"
+                                      : "text-gray-500"
+                                  } transition-colors`}
+                                />
+                                <span className="text-sm">{feature}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Input Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                {mode === "pdf" ? "Upload File" : "Video URL"}
-              </label>
-
-              {mode === "pdf" ? (
-                <div className="relative">
-                  <input
-                    type="file"
-                    accept=".pdf"
-                    onChange={handleFileChange}
-                    className="w-full p-3 pl-10 border border-slate-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all duration-200 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 file:mr-4 file:py-1 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
-                  />
-                  <Upload className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
-                </div>
-              ) : (
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder={getCurrentModeConfig()?.placeholder}
-                    value={url || ""}
-                    onChange={handleUrlChange}
-                    className="w-full p-3 pl-10 border border-slate-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all duration-200 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100"
-                  />
-                  <LinkIcon className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
-                </div>
-              )}
-            </div>
-
-            {/* File Info Display */}
-            {mode === "pdf" && file && (
-              <div className="p-3 bg-slate-50 dark:bg-slate-700 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                  <span className="text-sm text-slate-700 dark:text-slate-300">
-                    {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
-                  </span>
+                    );
+                  })}
                 </div>
               </div>
-            )}
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className={`w-full font-semibold py-3 px-6 rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 ${
-                isLoading
-                  ? "bg-slate-400 cursor-not-allowed"
-                  : "bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700"
-              } text-white`}
-            >
-              {isLoading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Analyzing Content...</span>
-                </span>
-              ) : (
-                <span className="flex items-center justify-center gap-2">
-                  <ScanLine className="w-4 h-4" />
-                  Start Analysis
-                </span>
+             
+
+              {/* Enhanced Input Form */}
+              <form onSubmit={handleSubmit} className="space-y-8 p-5">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl p-3">
+                      <Target className="w-6 h-6 text-white" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-white">
+                      {mode === "pdf"
+                        ? "📄 Upload Your Document"
+                        : "🎥 Paste Video URL"}
+                    </h3>
+                  </div>
+
+                  {mode === "pdf" ? (
+                    <div className="relative group">
+                      <input
+                        type="file"
+                        accept=".pdf"
+                        onChange={handleFileChange}
+                        className="w-full p-6 border-2 border-dashed border-gray-600 hover:border-blue-500 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 bg-gradient-to-br from-gray-700/50 to-slate-800/50 text-white file:mr-6 file:py-3 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-blue-500 file:to-indigo-600 file:text-white hover:file:from-blue-600 hover:file:to-indigo-700 file:shadow-lg hover:file:shadow-xl file:transition-all backdrop-blur-sm"
+                      />
+                      <div className="absolute top-6 right-6 text-gray-400 group-hover:text-blue-400 transition-colors">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="relative group">
+                      <input
+                        type="text"
+                        placeholder={getCurrentModeConfig()?.placeholder}
+                        value={url || ""}
+                        onChange={handleUrlChange}
+                        className="w-full p-6 pl-16 border-2 border-gray-600 group-hover:border-blue-500 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 bg-gradient-to-br from-gray-700/50 to-slate-800/50 text-white placeholder-gray-400 text-lg backdrop-blur-sm"
+                      />
+                      <LinkIcon className="absolute left-6 top-6 w-6 h-6 text-gray-400 group-hover:text-blue-400 transition-colors" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Enhanced File Info Display */}
+                {mode === "pdf" && file && (
+                  <div className="p-6 bg-gradient-to-r from-emerald-900/40 to-teal-900/40 rounded-2xl border border-emerald-500/30 backdrop-blur-sm">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl p-3">
+                        <FileText className="w-6 h-6 text-white" />
+                      </div>
+                      <div>
+                        <p className="text-white font-semibold text-lg">
+                          {file.name}
+                        </p>
+                        <p className="text-emerald-200">
+                          📊 Size: {(file.size / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                      </div>
+                      <div className="ml-auto">
+                        <CheckCircle className="w-8 h-8 text-emerald-400 animate-pulse" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Enhanced Submit Button */}
+                <div className="text-center">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className={`group relative w-full font-bold py-6 px-12 rounded-2xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900 shadow-2xl ${
+                      isLoading
+                        ? "bg-gray-600 cursor-not-allowed"
+                        : "bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-800 hover:shadow-3xl"
+                    } text-white text-xl border border-blue-400/30`}
+                  >
+                    {isLoading ? (
+                      <div className="flex items-center justify-center gap-4">
+                        <Loader2 className="w-8 h-8 animate-spin" />
+                        <span>🔄 Analyzing Content...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center gap-4">
+                        <Sparkles className="w-8 h-8 group-hover:animate-spin" />
+                        <span>✨ Start AI Analysis</span>
+                        <Zap className="w-8 h-8 group-hover:animate-pulse" />
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-r from-blue-400 via-purple-400 to-indigo-400 rounded-2xl blur opacity-0 group-hover:opacity-30 transition-opacity duration-300" />
+                  </button>
+                </div>
+              </form>
+
+              {/* Enhanced Error Display */}
+              {error && (
+                <div className="mt-8 p-6 bg-gradient-to-r from-red-900/40 to-pink-900/40 border border-red-500/30 rounded-2xl backdrop-blur-sm">
+                  <div className="flex items-center gap-4">
+                    <div className="bg-gradient-to-r from-red-500 to-pink-600 rounded-xl p-3">
+                      <AlertCircle className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <p className="text-white font-semibold text-lg">
+                        ⚠️ Oops! Something went wrong
+                      </p>
+                      <p className="text-red-200">{error}</p>
+                    </div>
+                  </div>
+                </div>
               )}
-            </button>
-          </form>
 
-          {/* Error Display */}
-          {error && (
-            <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-              <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
-              <p className="text-red-700 dark:text-red-400 text-sm">{error}</p>
+              {/* Enhanced History Component */}
+              <div className="mt-12 p-8  rounded-2xl backdrop-blur-sm">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="bg-gradient-to-r from-purple-600 to-indigo-700 rounded-xl p-3">
+                    <BookOpen className="w-6 h-6 text-white" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-white">
+                    📚 Your Learning History
+                  </h3>
+                </div>
+                <Model2history />
+              </div>
             </div>
-          )}
-          <Model2history />
-        </section>
-      )}
+          </div>
+        )}
 
-      {/* ---------------- TAB 2 : RESULTS ---------------- */}
-      {activeTab === "results" && (
-        <Model2results
-          file={file}
-          url={url}
-          mode={mode}
-          isLoading={isLoading}
-          setIsLoading={setIsLoading}
-          onNewScan={handleNewScan}
-          viewerRef={viewerRef}
-          fileUrl={fileUrl}
-          response={response}
-        />
-      )}
+        {/* ---------------- TAB 2 : RESULTS ---------------- */}
+        {activeTab === "results" && (
+          <div className="w-full h-full flex-grow">
+            <Model2results
+              file={file}
+              url={url}
+              mode={mode}
+              isLoading={isLoading}
+              setIsLoading={setIsLoading}
+              onNewScan={handleNewScan}
+              viewerRef={viewerRef}
+              fileUrl={fileUrl}
+              response={response}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 export default Scanner;
 
+
+
+================================================
+FILE: frontend/src/components/ScannerLoading.jsx
+================================================
+import React, { useState, useEffect } from "react";
+import { 
+  FileText, 
+  PlayCircle, 
+  Loader2, 
+  Brain, 
+  Sparkles, 
+  Zap,
+  ScanLine,
+  BookOpen,
+  Video,
+  Target,
+  CheckCircle,
+  Clock,
+  Cpu,
+  Eye,
+  MessageSquare
+} from "lucide-react";
+
+const ScannerLoading = ({ mode, fileName, url }) => {
+  const [progress, setProgress] = useState(0);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [dots, setDots] = useState("");
+
+  // PDF Analysis Steps
+  const pdfSteps = [
+    { icon: FileText, text: "Reading PDF structure", color: "text-blue-400" },
+    { icon: ScanLine, text: "Extracting text content", color: "text-green-400" },
+    { icon: Brain, text: "Analyzing key concepts", color: "text-purple-400" },
+    { icon: Target, text: "Identifying main topics", color: "text-yellow-400" },
+    { icon: BookOpen, text: "Generating summary", color: "text-indigo-400" },
+    { icon: Sparkles, text: "Creating insights", color: "text-pink-400" }
+  ];
+
+  // YouTube Analysis Steps
+  const youtubeSteps = [
+    { icon: PlayCircle, text: "Fetching video metadata", color: "text-red-400" },
+    { icon: Video, text: "Processing video content", color: "text-orange-400" },
+    { icon: MessageSquare, text: "Extracting transcript", color: "text-green-400" },
+    { icon: Brain, text: "Analyzing content flow", color: "text-purple-400" },
+    { icon: Clock, text: "Creating timestamps", color: "text-blue-400" },
+    { icon: Sparkles, text: "Generating insights", color: "text-pink-400" }
+  ];
+
+  const steps = mode === "pdf" ? pdfSteps : youtubeSteps;
+
+  useEffect(() => {
+    // Progress animation
+    const progressInterval = setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 100) return 100;
+        return prev + Math.random() * 3;
+      });
+    }, 200);
+
+    // Step progression
+    const stepInterval = setInterval(() => {
+      setCurrentStep(prev => {
+        if (prev >= steps.length - 1) return steps.length - 1;
+        return prev + 1;
+      });
+    }, 1500);
+
+    // Dots animation
+    const dotsInterval = setInterval(() => {
+      setDots(prev => {
+        if (prev.length >= 3) return "";
+        return prev + ".";
+      });
+    }, 500);
+
+    return () => {
+      clearInterval(progressInterval);
+      clearInterval(stepInterval);
+      clearInterval(dotsInterval);
+    };
+  }, [steps.length]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-white overflow-hidden flex items-center justify-center">
+      {/* Animated Background */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-purple-500/10 rounded-full blur-3xl animate-pulse delay-1000" />
+        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-500/5 rounded-full blur-3xl animate-pulse delay-2000" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-lg mx-auto px-6">
+        {/* Main Loading Card */}
+        <div className="bg-gradient-to-br from-gray-800/80 to-slate-900/80 rounded-2xl shadow-2xl border border-gray-700/50 p-6 backdrop-blur-sm">
+          {/* Header */}
+          <div className="text-center mb-6">
+            <div className="relative inline-block">
+              <div className={`w-16 h-16 bg-gradient-to-br ${
+                mode === "pdf" 
+                  ? "from-orange-500 via-red-500 to-pink-600" 
+                  : "from-red-500 via-pink-500 to-purple-600"
+              } rounded-xl flex items-center justify-center shadow-2xl mb-3 animate-pulse`}>
+                {mode === "pdf" ? (
+                  <FileText className="w-8 h-8 text-white" />
+                ) : (
+                  <PlayCircle className="w-8 h-8 text-white" />
+                )}
+              </div>
+              <div className="absolute -top-1 -right-1 w-6 h-6 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center animate-spin">
+                <Loader2 className="w-3 h-3 text-white" />
+              </div>
+            </div>
+            
+            <h2 className="text-2xl font-bold text-white mb-2">
+              {mode === "pdf" ? "ðŸ“„ Analyzing PDF" : "ðŸŽ¥ Processing Video"}
+            </h2>
+            <p className="text-gray-300 text-sm mb-3">
+              {mode === "pdf" 
+                ? "Extracting insights from your document" 
+                : "Converting video into structured knowledge"
+              }
+            </p>
+            
+            {/* File/URL Info */}
+            <div className="bg-gradient-to-r from-gray-700/50 to-slate-800/50 rounded-lg p-3 backdrop-blur-sm">
+              <p className="text-gray-200 font-medium truncate text-sm">
+                {mode === "pdf" ? fileName : url}
+              </p>
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm font-medium text-gray-300">Progress</span>
+              <span className="text-sm font-medium text-blue-400">{Math.round(progress)}%</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div 
+                className="bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-600 h-2 rounded-full transition-all duration-500 ease-out relative"
+                style={{ width: `${progress}%` }}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-pulse" />
+              </div>
+            </div>
+          </div>
+
+          {/* Current Step Display */}
+          <div className="mb-6">
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-500/30 backdrop-blur-sm">
+              <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center animate-pulse">
+                {React.createElement(steps[currentStep]?.icon || Loader2, {
+                  className: "w-5 h-5 text-white"
+                })}
+              </div>
+              <div className="flex-1">
+                <p className="text-blue-100 font-semibold text-sm">
+                  {steps[currentStep]?.text || "Processing"}
+                  <span className="text-blue-400">{dots}</span>
+                </p>
+              </div>
+              <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+            </div>
+          </div>
+
+          {/* Animated Particles */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl">
+            {[...Array(10)].map((_, i) => (
+              <div
+                key={i}
+                className="absolute w-1 h-1 bg-blue-400 rounded-full animate-pulse"
+                style={{
+                  left: `${Math.random() * 100}%`,
+                  top: `${Math.random() * 100}%`,
+                  animationDelay: `${Math.random() * 2}s`,
+                  animationDuration: `${2 + Math.random() * 2}s`
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ScannerLoading;
 
 
 ================================================
@@ -6385,19 +7120,7 @@ export default function Dashboard() {
         </nav>
 
         {/* Bottom section */}
-        {!sidebarCollapsed && (
-          <div className="mt-auto p-4 border-t border-slate-700">
-            <div className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
-              <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
-                <User className="w-4 h-4 text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-200 truncate">User</p>
-                <p className="text-xs text-slate-400 truncate">Admin</p>
-              </div>
-            </div>
-          </div>
-        )}
+        
       </aside>
 
       {/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Main Content Area â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
@@ -6405,8 +7128,8 @@ export default function Dashboard() {
        
 
         {/* Main Content */}
-        <main className="flex-1 bg-gradient-to-br from-slate-900 via-gray-900 to-black  overflow-y-auto p-6">
-          <div className="max-w-7xl mx-auto">
+        <main className="flex-1 bg-gradient-to-br from-slate-900 via-gray-900 to-black  overflow-y-auto">
+          <div className="">
             {CurrentScreen ? (
               <CurrentScreen />
             ) : (
@@ -7618,144 +8341,204 @@ FILE: transcripts/multi_mcqs.json
 ================================================
 [
     {
-        "question": "According to the speaker, what is one significant concern regarding artificial intelligence that keeps them up at night?",
+        "question": "What is the primary function of a Generative Adversarial Network (GAN)?",
         "options": {
-            "a": "The rapid pace of technological advancements in AI.",
-            "b": "The potential for AI to become self-aware and autonomous.",
-            "c": "People being unaware that AI is making decisions directly impacting their lives.",
-            "d": "The high cost of developing advanced AI systems."
+            "a": "To classify images as real or fake.",
+            "b": "To enhance the resolution of existing images.",
+            "c": "To generate realistic fake images.",
+            "d": "To compress image data for storage."
         },
         "correct_answer": "c",
-        "timestamp": "00:00:16,160",
-        "seconds": 16,
-        "youtube_url": "https://youtu.be/aGwYtUzMQUk?t=16s",
-        "explanation": "Explanation: The speaker explicitly states that a concern keeping them up at night is that \"people may have no idea that an artificial intelligence is making a decision that directly impacts their lives.\""
+        "timestamp": "00:00:31,160 --> 00:01:24,799",
+        "seconds": 31,
+        "youtube_url": "https://youtu.be/dQw4w9WgXcQ?t=31s",
+        "explanation": "Explaination: The video explicitly states that GANs are used to generate fake images.  The \"generating\" part of the name highlights this core function."
     },
     {
-        "question": "What is the primary reason given for why many AI proof of concepts fail within organizations?",
+        "question": "In a GAN, what is the role of the \"discriminator\"?",
         "options": {
-            "a": "Lack of sufficient computing power.",
-            "b": "Insufficient data for model training.",
-            "c": "People's distrust of the AI model's results.",
-            "d": "High employee turnover in AI teams."
+            "a": "To generate new images from noise data.",
+            "b": "To determine if an image is high resolution.",
+            "c": "To distinguish between real and fake images.",
+            "d": "To enhance the color palette of images."
         },
         "correct_answer": "c",
-        "timestamp": "00:01:25,120",
-        "seconds": 85,
-        "youtube_url": "https://youtu.be/aGwYtUzMQUk?t=85s",
-        "explanation": "Explanation: The speaker directly states that AI proof of concepts often fail \"because people do not trust the results from that AI model.\""
+        "timestamp": "00:01:43,680 --> 00:02:29,800",
+        "seconds": 103,
+        "youtube_url": "https://youtu.be/dQw4w9WgXcQ?t=103s",
+        "explanation": "Explaination: The discriminator's purpose is to differentiate between real and fake images, acting as a judge in the adversarial process."
     },
     {
-        "question": "**What is the primary definition of Artificial Intelligence (AI) as described in the transcript?**",
+        "question": "What type of machine learning is a Generative Adversarial Network (GAN), and what are its two key components?",
         "options": {
-            "a": "A type of robot designed for physical labor.",
-            "b": "The simulation of human intelligence processes by machines.",
-            "c": "A new programming language for complex calculations.",
-            "d": "The study of human-computer interaction."
+            "a": "Supervised learning; a predictor and a classifier",
+            "b": "Unsupervised learning; a generator and a discriminator",
+            "c": "Reinforcement learning; an actor and a critic",
+            "d": "Supervised learning; a generator and a discriminator"
         },
         "correct_answer": "b",
-        "timestamp": "00:00:02,720",
-        "seconds": 2,
-        "youtube_url": "https://youtu.be/r2rNMmf-zXQ?t=2s",
-        "explanation": "Explanation: The transcript explicitly states, \"Artificial intelligence AI refers to the simulation of human intelligence processes by machines particularly computer systems.\""
+        "timestamp": "00:00:55,877 --> 00:02:46,092",
+        "seconds": 55,
+        "youtube_url": "https://youtu.be/dQw4w9WgXcQ?t=55s",
+        "explanation": "Explaination: The transcript explicitly states that a GAN is an example of unsupervised learning and that it consists of two submodels: a generator and a discriminator."
     },
     {
-        "question": "**According to the transcript, which of the following is a key characteristic of \"General AI\"?**",
+        "question": "What is the primary function of the discriminator in a GAN?",
         "options": {
-            "a": "Designed to perform a narrow task like facial recognition.",
-            "b": "Capable of performing any intellectual task that a human can do.",
-            "c": "Primarily used for internet searches and data analysis.",
-            "d": "Limited to solving mathematical theorems and playing chess."
-        },
-        "correct_answer": "b",
-        "timestamp": "00:00:27,160",
-        "seconds": 27,
-        "youtube_url": "https://youtu.be/r2rNMmf-zXQ?t=27s",
-        "explanation": "Explanation: The video categorizes AI into \"narrow AI... designed to perform a narrow task\" and \"general AI which can perform any intellectual task that a human can do.\""
-    },
-    {
-        "question": "**Who is credited with first coining the term \"Artificial Intelligence\" and at what significant event?**",
-        "options": {
-            "a": "Alan Turing at the Bletchley Park Conference.",
-            "b": "Marvin Minsky at the MIT AI Lab establishment.",
-            "c": "John McCarthy in 1956 at the Dartmouth conference.",
-            "d": "Claude Shannon at the Bell Labs Symposium."
+            "a": "To generate fake samples from random input.",
+            "b": "To update the generator's model based on prediction accuracy.",
+            "c": "To distinguish between real and fake samples.",
+            "d": "To provide feedback to the user on the quality of generated samples."
         },
         "correct_answer": "c",
-        "timestamp": "00:00:40,079",
-        "seconds": 40,
-        "youtube_url": "https://youtu.be/r2rNMmf-zXQ?t=40s",
-        "explanation": "Explanation: The transcript states, \"The term artificial intelligence was first coined by John McCarthy in 1956 at the Dartmouth conference\"."
+        "timestamp": "00:00:55,877 --> 00:02:46,092",
+        "seconds": 55,
+        "youtube_url": "https://youtu.be/dQw4w9WgXcQ?t=55s",
+        "explanation": "Explaination: The discriminator's role is clearly defined as evaluating samples and determining whether they are real or fake, generated by the generator."
     },
     {
-        "question": "What does AI ethics primarily refer to?",
+        "question": "How does the training process of a GAN work in relation to the generator and discriminator?",
         "options": {
-            "a": "The study of artificial intelligence development only.",
-            "b": "Principles and practices for developing and using AI ethically, unbiased, transparent, and accountable.",
-            "c": "Ensuring AI systems are always accurate without human intervention.",
-            "d": "The historical impact of AI on society."
-        },
-        "correct_answer": "b",
-        "timestamp": "00:01:53,880",
-        "seconds": 113,
-        "youtube_url": "https://youtu.be/COgvUFGLPCs?t=113s",
-        "explanation": "Explanation: The video explicitly states, \"AI ethics refers to the principles and practices that ensure artificial intelligence systems are developed and used in a way that is ethical, unbiased, transparent, and accountable.\""
-    },
-    {
-        "question": "According to the video, what is a primary reason AI ethics is crucial, especially if AI systems are not carefully designed?",
-        "options": {
-            "a": "To increase the processing speed of AI algorithms.",
-            "b": "To ensure AI systems only handle trivial tasks.",
-            "c": "To prevent AI from continuing and amplifying societal biases.",
-            "d": "To replace human decision-making entirely."
+            "a": "Both models are simultaneously trained and updated in each iteration.",
+            "b": "The generator is trained first, followed by the discriminator.",
+            "c": "The discriminator is trained first, and only then the generator starts training, which involves an iterative process of creating fakes, receiving feedback and updating its model.",
+            "d": "The models are trained independently and their results are combined later."
         },
         "correct_answer": "c",
-        "timestamp": "00:02:21,920",
-        "seconds": 141,
-        "youtube_url": "https://youtu.be/COgvUFGLPCs?t=141s",
-        "explanation": "Explanation: The video highlights that \"AI systems might seem to be unbiased but if not designed carefully they can actually continue and amplify societal biases,\" using Google Gemini's mistakes as a key example of this problem."
+        "timestamp": "00:03:14,330 --> 00:05:46,831",
+        "seconds": 194,
+        "youtube_url": "https://youtu.be/dQw4w9WgXcQ?t=194s",
+        "explanation": "Explaination: The transcript describes a staged training process: the discriminator is trained first to recognize real samples, then the generator is introduced to create fakes and the iterative process of feedback and model updates begins."
     },
     {
-        "question": "What is the speaker's main argument regarding the current focus of AI discussions?",
+        "question": "What is the core idea behind consistency regularization in the context of Generative Adversarial Networks (GANs)?",
         "options": {
-            "a": "That the primary concern should be achieving the AI singularity.",
-            "b": "That AI poses an immediate existential threat to humanity which must be prevented at all costs.",
-            "c": "That focusing on hypothetical future sci-fi scenarios distracts from AI's current, tangible impacts and ethical considerations.",
-            "d": "That AI's benefits far outweigh any potential negative consequences, making current concerns overblown."
-        },
-        "correct_answer": "c",
-        "timestamp": "00:03:38,840",
-        "seconds": 218,
-        "youtube_url": "https://youtu.be/eXdVDhOGqoE?t=218s",
-        "explanation": "Explanation: The speaker explicitly states that instead of focusing on \"future sci-fi scenarios\" or \"existential risk,\" the discussion should shift to \"current tangible impacts\" and the work needed to address them."
-    },
-    {
-        "question": "According to the speaker, what is a significant environmental concern regarding large language models like Bloom and GPT-3?",
-        "options": {
-            "a": "They require vast amounts of physical storage space on local devices, contributing to e-waste.",
-            "b": "Their training and operation consume substantial energy and emit considerable carbon dioxide.",
-            "c": "They deplete rare earth minerals used in their construction, leading to resource scarcity.",
-            "d": "They generate significant heat, contributing directly to urban heat island effects."
+            "a": "To ensure the generator produces highly diverse images.",
+            "b": "To enforce consistent predictions from the discriminator on both real and augmented images.",
+            "c": "To improve the stability of the generator network.",
+            "d": "To reduce the computational cost of GAN training."
         },
         "correct_answer": "b",
-        "timestamp": "00:01:50,148",
-        "seconds": 110,
-        "youtube_url": "https://youtu.be/eXdVDhOGqoE?t=110s",
-        "explanation": "Explanation: The speaker details how AI models, especially large language models, live on the cloud and are powered by \"vast amounts of energy,\" leading to significant carbon dioxide emissions during their training and use. For example, training Bloom alone emitted 25 tons of carbon dioxide."
+        "timestamp": "00:00:30,240 --> 00:01:12,210",
+        "seconds": 30,
+        "youtube_url": "https://youtu.be/2UBJbLr_Ja0?t=30s",
+        "explanation": "Explaination: The video explicitly states that consistency regularization aims to make the discriminator predict the same class label for real images and their augmented versions, thereby strengthening the training process."
     },
     {
-        "question": "What specific problem related to AI training data are organizations like Spawning.ai working to address for artists?",
+        "question": "What is a key problem identified with the original consistency regularization (CR) GAN formulation?",
         "options": {
-            "a": "The inability of AI models to accurately replicate unique artistic styles without proper licensing.",
-            "b": "The challenge of preventing AI from generating new art in the exact style of living artists.",
-            "c": "The lack of fair compensation mechanisms for artists whose work is used commercially by AI.",
-            "d": "The difficulty for artists to prove their work was used without consent in AI model training, leading to copyright infringement issues."
+            "a": "The generator overfits to the training data.",
+            "b": "The discriminator struggles to differentiate between real and fake images.",
+            "c": "The discriminator might mistake augmentations as actual features of the target data.",
+            "d": "The consistency regularization loss is computationally expensive."
         },
-        "correct_answer": "d",
-        "timestamp": "00:04:24,302",
-        "seconds": 264,
-        "youtube_url": "https://youtu.be/eXdVDhOGqoE?t=264s",
-        "explanation": "Explanation: The speaker explains that it has been \"really difficult for artists to prove that their life's work was used\" to train AI models without their consent. Spawning.ai created a tool to help artists search datasets for their work to gather \"crucial evidence\" for copyright infringement cases and is working on opt-in/opt-out mechanisms."
+        "correct_answer": "c",
+        "timestamp": "00:04:08,450 --> 00:04:46,370",
+        "seconds": 248,
+        "youtube_url": "https://youtu.be/2UBJbLr_Ja0?t=248s",
+        "explanation": "Explaination: The transcript quotes the paper directly, highlighting that a major flaw in the original method was the discriminator's potential misinterpretation of augmentations as genuine data features."
+    },
+    {
+        "question": "What are Generative Adversarial Networks (GANs)?",
+        "options": {
+            "a": "A type of Recurrent Neural Network used for time series data.",
+            "b": "A class of deep learning architectures used to generate realistic data by learning patterns from existing datasets.",
+            "c": "A type of convolutional neural network used for image classification.",
+            "d": "A system for analyzing large datasets to find patterns."
+        },
+        "correct_answer": "b",
+        "timestamp": "00:00:01,270 --> 00:01:04,720",
+        "seconds": 1,
+        "youtube_url": "https://youtu.be/y7sL_q8BtWQ?t=1s",
+        "explanation": "Explaination: The transcript explicitly defines GANs as a class of deep learning architectures designed to generate realistic data by learning from existing datasets."
+    },
+    {
+        "question": "What are the two main components of a GAN, and what are their respective roles?",
+        "options": {
+            "a": "Classifier and Regressor; one classifies data, the other predicts values.",
+            "b": "Encoder and Decoder; one compresses data, the other reconstructs it.",
+            "c": "Generator and Discriminator; one generates data, the other evaluates its realism.",
+            "d": "Autoencoder and Variational Autoencoder; both generate data but with different approaches."
+        },
+        "correct_answer": "c",
+        "timestamp": "00:00:46,960 --> 00:01:48,720",
+        "seconds": 46,
+        "youtube_url": "https://youtu.be/y7sL_q8BtWQ?t=46s",
+        "explanation": "Explaination: The video clearly states that GANs consist of a generator (which creates new data) and a discriminator (which assesses the authenticity of the generated data)."
+    },
+    {
+        "question": "How does the training process of a GAN work?",
+        "options": {
+            "a": "The generator and discriminator are trained sequentially, one after the other.",
+            "b": "Only the discriminator is trained; the generator's output is pre-defined.",
+            "c": "The generator and discriminator are trained simultaneously in a loop, competing against each other.",
+            "d": "The generator is trained first, and then the discriminator is fine-tuned based on the generator's output."
+        },
+        "correct_answer": "c",
+        "timestamp": "00:02:13,040 --> 00:03:17,280",
+        "seconds": 133,
+        "youtube_url": "https://youtu.be/y7sL_q8BtWQ?t=133s",
+        "explanation": "Explaination: The transcript describes the training as an iterative process where both the generator and discriminator are trained concurrently, with the generator aiming to fool the discriminator and the discriminator aiming to correctly identify real and fake data."
     }
 ]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book/index.faiss
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book/index.pkl
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book1/index.faiss
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book1/index.pkl
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book3/index.faiss
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/book_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_book3/index.pkl
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/yt_gvpHdrU1F1ZmUy7y4TqTLHsLVMR2_H0JfZDXStKY/index.faiss
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/yt_gvpHdrU1F1ZmUy7y4TqTLHsLVMR2_H0JfZDXStKY/index.pkl
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/yt_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_H0JfZDXStKY/index.faiss
+================================================
+[Non-text file]
+
+
+================================================
+FILE: vectorstores/yt_WkSCUnxKz1ZOWKyVhJ4ANBEZPtq2_H0JfZDXStKY/index.pkl
+================================================
+[Non-text file]
 

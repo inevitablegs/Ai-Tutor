@@ -22,8 +22,7 @@ import os
 import requests
 from urllib.parse import urlparse, parse_qs
 
-# Disable yt-dlp logger to suppress ffmpeg warnings
-# logging.getLogger('yt_dlp').setLevel(logging.ERROR)
+
 
 class YouTubeProcessor:
     def __init__(self):
@@ -203,85 +202,113 @@ class YouTubeProcessor:
 
     def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
         """Get transcript with multiple fallback strategies"""
-        # First try standard API with proxies
         try:
-            transcript = self.ytt_api.get_transcript(video_id, languages=['en'])
-            print("Found English transcript via API")
-            return transcript, 'en'
-        except Exception as e:
-            print(f"API failed for English transcript: {str(e)}")
-        
-        # Fallback 1: Try Hindi transcript
-        try:
-            transcript = self.ytt_api.get_transcript(video_id, languages=['hi'])
-            print("Found Hindi transcript via API")
-            return transcript, 'hi'
-        except NoTranscriptFound:
+            # Use instance method with proxy config
+            transcript_list = self.ytt_api.list_transcripts(video_id)
+
+            # Try finding an English transcript
             try:
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                transcript = transcript_list.find_transcript(['en']).fetch()
+                print("Found English transcript via API")
+                return transcript, 'en'
+            except NoTranscriptFound:
+                print("No English transcript found.")
+
+            # Try finding a Hindi transcript
+            try:
+                transcript = transcript_list.find_transcript(['hi']).fetch()
+                print("Found Hindi transcript via API")
+                return transcript, 'hi'
+            except NoTranscriptFound:
+                print("No Hindi transcript found, checking for auto-generated...")
                 for t in transcript_list:
                     if t.language_code == 'hi' and t.is_generated:
                         print("Found auto-generated Hindi transcript")
                         return t.fetch(), 'hi'
             except Exception as e:
-                print(f"Couldn't find Hindi transcript: {str(e)}")
+                print(f"Error fetching Hindi transcript: {str(e)}")
+
         except Exception as e:
-            print(f"Error fetching Hindi transcript: {str(e)}")
-        
-        # Fallback 2: Try scraping
+            print(f"API failed to list transcripts: {str(e)}")
+
+        # Fallback 2: Scraping
         scraped_transcript = self._scrape_transcript(video_id)
         if scraped_transcript:
+            print("Used fallback scraping method.")
             return scraped_transcript, 'en'
-        
+
         return None, None
+
 
     def _scrape_transcript(self, video_id: str) -> Optional[List[Dict]]:
         """Fallback method to scrape transcript if API fails"""
         url = f"https://www.youtube.com/watch?v={video_id}"
-        
         response = self._make_request_with_retry(url)
+
         if not response or response.status_code != 200:
+            print("Failed to fetch YouTube page.")
             return None
-        
+
         try:
             soup = BeautifulSoup(response.text, 'html.parser')
-            script_tags = soup.find_all('script')
-            
-            # Look for transcript data in script tags
-            for script in script_tags:
-                if 'captionTracks' in str(script):
-                    # This is a simplified parser - actual implementation may need adjustment
-                    data = json.loads(script.string.split('ytInitialPlayerResponse = ')[1].split(';')[0])
-                    caption_tracks = data.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-                    
-                    for track in caption_tracks:
-                        if track.get('languageCode') in self.supported_languages:
-                            transcript_url = track.get('baseUrl')
-                            if transcript_url:
-                                transcript_response = self._make_request_with_retry(f"{transcript_url}&fmt=json3")
-                                if transcript_response:
-                                    return self._parse_scraped_transcript(transcript_response.json())
+            initial_data_script = None
+
+            for script in soup.find_all("script"):
+                if script.string and 'ytInitialPlayerResponse' in script.string:
+                    initial_data_script = script.string
+                    break
+
+            if not initial_data_script:
+                print("Could not locate ytInitialPlayerResponse in HTML.")
+                return None
+
+            json_str = initial_data_script.split('ytInitialPlayerResponse = ')[1].split(';</script>')[0].strip()
+            data = json.loads(json_str)
+
+            caption_tracks = (
+                data.get("captions", {})
+                    .get("playerCaptionsTracklistRenderer", {})
+                    .get("captionTracks", [])
+            )
+
+            for track in caption_tracks:
+                lang_code = track.get("languageCode", "")
+                if lang_code in self.supported_languages:
+                    transcript_url = track.get("baseUrl")
+                    if transcript_url:
+                        transcript_response = self._make_request_with_retry(f"{transcript_url}&fmt=json3")
+                        if transcript_response and transcript_response.status_code == 200:
+                            print(f"Successfully scraped transcript in {lang_code}")
+                            return self._parse_scraped_transcript(transcript_response.json())
+
         except Exception as e:
             print(f"Scraping failed: {str(e)}")
-        
+
         return None
+
 
     def _parse_scraped_transcript(self, transcript_data: Dict) -> List[Dict]:
         """Parse scraped transcript data into standard format"""
         events = transcript_data.get('events', [])
         transcript = []
-        
+
         for event in events:
-            if 'segs' in event:
-                for seg in event['segs']:
-                    if seg.get('utf8'):
-                        transcript.append({
-                            'text': seg['utf8'],
-                            'start': event.get('tStartMs', 0) / 1000,
-                            'duration': event.get('dDurationMs', 3000) / 1000
-                        })
-        
+            if 'segs' not in event or not isinstance(event['segs'], list):
+                continue
+
+            for seg in event['segs']:
+                text = seg.get('utf8')
+                if not text:
+                    continue
+                transcript.append({
+                    'text': text,
+                    'start': event.get('tStartMs', 0) / 1000,
+                    'duration': event.get('dDurationMs', 3000) / 1000
+                })
+
         return transcript
+
+
     def load_youtube_transcript(self, video_url: str) -> List[Document]:
         """Load and process YouTube transcript into chunks with timestamps"""
         video_id = self.extract_video_id(video_url)
