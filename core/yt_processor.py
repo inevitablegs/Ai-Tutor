@@ -11,7 +11,8 @@ import time
 import isodate
 from bs4 import BeautifulSoup
 import html
-import xml.et.ElementTree as ET
+import xml.etree.ElementTree as ET
+
 
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
