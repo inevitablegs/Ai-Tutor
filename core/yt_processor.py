@@ -208,7 +208,7 @@ class YouTubeProcessor:
 
             # Try finding an English transcript
             try:
-                transcript = transcript_list.find_transcript(['en']).fetch()
+                transcript = transcript_list.find_transcript(['en'])
                 print("Found English transcript via API")
                 return transcript, 'en'
             except NoTranscriptFound:
@@ -216,7 +216,7 @@ class YouTubeProcessor:
 
             # Try finding a Hindi transcript
             try:
-                transcript = transcript_list.find_transcript(['hi']).fetch()
+                transcript = transcript_list.find_transcript(['hi'])
                 print("Found Hindi transcript via API")
                 return transcript, 'hi'
             except NoTranscriptFound:
@@ -224,7 +224,7 @@ class YouTubeProcessor:
                 for t in transcript_list:
                     if t.language_code == 'hi' and t.is_generated:
                         print("Found auto-generated Hindi transcript")
-                        return t.fetch(), 'hi'
+                        return t, 'hi'
             except Exception as e:
                 print(f"Error fetching Hindi transcript: {str(e)}")
 
