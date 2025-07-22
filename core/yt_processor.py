@@ -11,23 +11,19 @@ import time
 import isodate
 from bs4 import BeautifulSoup
 import html
-import xml.etree.ElementTree as ET
+import xml.et.ElementTree as ET
 
-# --- Library Imports ---
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.proxies import WebshareProxyConfig
 
-# --- LangChain Imports ---
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 import google.generativeai as genai
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 class YouTubeProcessor:
     def __init__(self):
@@ -36,22 +32,20 @@ class YouTubeProcessor:
         self._init_proxies()
 
     def _init_configurations(self):
-        """Initialize all non-proxy related configurations"""
         self.groq_api_key = os.getenv("GROQ_API_KEY")
-        self.groq_model = "llama3-70b-8192" # A more recent, capable model
+        self.groq_model = "llama3-70b-8192"
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
         self.embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         self.supported_languages = ['en', 'hi']
         self.max_retries = 2
         self.initial_delay = 1
+        self.request_timeout = 25
         logging.info("Core configurations initialized.")
 
     def _init_proxies(self):
-        """Initialize proxy configurations for all network requests."""
         self.webshare_username = os.getenv("WEBSHARE_USERNAME")
         self.webshare_password = os.getenv("WEBSHARE_PASSWORD")
         self.has_proxies = self.webshare_username and self.webshare_password
-        
         self.requests_proxies = None
         
         if self.has_proxies:
@@ -59,30 +53,32 @@ class YouTubeProcessor:
             proxy_url = f'http://{self.webshare_username}:{self.webshare_password}@p.webshare.io:80'
             self.requests_proxies = {'http': proxy_url, 'https': proxy_url}
             
+            # **IMPROVEMENT**: Add location filters. This can help bypass failing IP pools.
+            # Try different country codes (e.g., ["us", "de", "fr", "gb"]) if issues persist.
             proxy_config = WebshareProxyConfig(
                 proxy_username=self.webshare_username,
-                proxy_password=self.webshare_password
+                proxy_password=self.webshare_password,
+                filter_ip_locations=["us", "de"] 
             )
             self.ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
         else:
-            logging.warning("PROXY_CONFIG_WARNING: Webshare credentials not set. Using direct connection.")
+            logging.warning("PROXY_CONFIG_WARNING: Webshare credentials not set.")
             self.ytt_api = YouTubeTranscriptApi()
 
         self.no_proxy_ytt_api = YouTubeTranscriptApi(proxy_config=None)
-        
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
         
+    # ... [clean_text, generate_text_hash, extract_video_id, format_timestamp_url are unchanged] ...
+
     @staticmethod
     def clean_text(text: str) -> str:
-        lines = text.splitlines()
-        cleaned_lines = [line.strip() for line in lines if line.strip() and not re.match(r'^[_\W\s]{5,}$', line)]
+        lines = text.splitlines(); cleaned_lines = [line.strip() for line in lines if line.strip() and not re.match(r'^[_\W\s]{5,}$', line)]
         return " ".join(cleaned_lines)
 
     @staticmethod
-    def generate_text_hash(text: str) -> str:
-        return hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
+    def generate_text_hash(text: str) -> str: return hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
 
     @staticmethod
     def extract_video_id(video_url: str) -> str:
@@ -105,122 +101,98 @@ class YouTubeProcessor:
         for attempt in range(self.max_retries + 1):
             logging.info(f"Requesting {url[:80]}... (Attempt {attempt+1}, {proxy_msg})")
             try:
-                response = requests.get(url, proxies=proxies_to_use, headers=self.headers, timeout=20)
+                response = requests.get(url, proxies=proxies_to_use, headers=self.headers, timeout=self.request_timeout)
                 response.raise_for_status()
                 return response
             except Exception as e:
                 logging.warning(f"Request attempt {attempt + 1} failed: {e}")
-                if attempt >= self.max_retries:
-                    logging.error(f"Max retries reached for request ({proxy_msg})")
-                else:
-                    time.sleep(self.initial_delay * (2 ** attempt))
+                if attempt >= self.max_retries: logging.error(f"Max retries reached for request ({proxy_msg})")
+                else: time.sleep(self.initial_delay * (2 ** attempt))
         return None
 
     def get_youtube_video_info(self, video_url: str) -> dict:
         api_key = os.getenv("YOUTUBE_API_KEY")
-        if not api_key:
-            logging.warning("YOUTUBE_API_KEY not set, cannot fetch detailed video info.")
-            return {}
+        if not api_key: return {}
         
         video_id = self.extract_video_id(video_url)
         endpoint = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id={video_id}&key={api_key}"
-
+        
         response = self._make_request_with_retry(endpoint, use_proxy=True)
         if not response and self.has_proxies:
             response = self._make_request_with_retry(endpoint, use_proxy=False)
 
-        if not response:
-            return {}
+        if not response: return {}
 
         try:
             data = response.json()
             if not data.get("items"): return {}
             item = data["items"][0]
             snippet, content, stats = item.get("snippet", {}), item.get("contentDetails", {}), item.get("statistics", {})
-            return {
-                "title": snippet.get("title", ""), "description": snippet.get("description", ""),
-                "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
-                "duration": self.parse_duration(content.get("duration", "PT0S")),
-                "view_count": int(stats.get("viewCount", 0)), "upload_date": snippet.get("publishedAt", "")
-            }
+            return {"title": snippet.get("title", ""), "description": snippet.get("description", ""), "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                    "duration": self.parse_duration(content.get("duration", "PT0S")), "view_count": int(stats.get("viewCount", 0)), "upload_date": snippet.get("publishedAt", "")}
         except Exception as e:
-            logging.error(f"Error parsing video info JSON: {e}")
-            return {}
-            
+            logging.error(f"Error parsing video info JSON: {e}"); return {}
+
     def parse_duration(self, duration: str) -> int:
         try: return int(isodate.parse_duration(duration).total_seconds())
         except: return 0
 
     def get_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
-        """Hardened transcript fetcher that ALWAYS returns a List[Dict] on success."""
-        
-        # --- Stage 1: Attempt with primary API (proxied if configured) ---
         logging.info("Attempt 1: Fetching transcript via primary API client.")
         try:
             transcript_list = self.ytt_api.list(video_id)
             transcript_obj = transcript_list.find_transcript(self.supported_languages)
             lang_code = transcript_obj.language_code
             logging.info(f"API (primary) found '{lang_code}' transcript. Fetching and normalizing...")
-            # **CRITICAL FIX**: Convert the FetchedTranscript object to a list of dictionaries
-            # This makes the output consistent with the scraper fallback.
             return transcript_obj.fetch().to_raw_data(), lang_code
         except Exception as e:
             error_str = str(e).lower()
             if self.has_proxies and ('proxy' in error_str or 'tunnel' in error_str or '502' in error_str or 'ssl' in error_str):
-                logging.warning(f"API (with proxy) failed with a network/proxy error: {e}. Moving to no-proxy API attempt.")
-                # --- Stage 2: Attempt with no-proxy API ---
-                logging.info("Attempt 2: Fetching transcript via no-proxy API client.")
+                logging.warning(f"API (with proxy) failed: {e}. Moving to no-proxy API.")
                 try:
                     transcript_list = self.no_proxy_ytt_api.list(video_id)
                     transcript_obj = transcript_list.find_transcript(self.supported_languages)
                     lang_code = transcript_obj.language_code
-                    logging.info(f"API (no proxy) found '{lang_code}' transcript. Fetching and normalizing...")
                     return transcript_obj.fetch().to_raw_data(), lang_code
                 except Exception as no_proxy_e:
-                    logging.warning(f"API (no proxy) also failed: {no_proxy_e}. Proceeding to scraper.")
+                    logging.warning(f"API (no proxy) also failed: {no_proxy_e}.")
             else:
-                logging.warning(f"API (primary) failed with non-proxy error: {e}. Proceeding to scraper.")
-        
+                logging.warning(f"API (primary) failed: {e}.")
         return self._scrape_transcript(video_id)
-
+    
     def _scrape_transcript(self, video_id: str) -> Tuple[Optional[List[Dict]], Optional[str]]:
-        # This function returns List[Dict] by design, matching the fixed `get_transcript` output.
         logging.info("Attempt 3: Starting transcript scraping fallback.")
         transcript_data, lang = self._attempt_scrape_session(video_id, use_proxy=True)
         if transcript_data: return transcript_data, lang
         if self.has_proxies:
-            logging.warning("Scraping with proxy failed. Retrying scrape session without proxy.")
+            logging.warning("Scraping with proxy failed. Retrying scrape without proxy.")
             transcript_data, lang = self._attempt_scrape_session(video_id, use_proxy=False)
             if transcript_data: return transcript_data, lang
-        logging.error(f"All transcript fetching attempts failed for video {video_id}.")
+        logging.error(f"All transcript fetching methods failed for video {video_id}.")
         return None, None
-
+    
     def _attempt_scrape_session(self, video_id: str, use_proxy: bool) -> Tuple[Optional[List[Dict]], Optional[str]]:
-        # ... (rest of function is robust and correct from previous version)
         page_url = f"https://www.youtube.com/watch?v={video_id}"
         response = self._make_request_with_retry(page_url, use_proxy=use_proxy)
         if not response: return None, None
         try:
-            if 'ytInitialPlayerResponse = ' in response.text:
-                json_str = response.text.split('ytInitialPlayerResponse = ')[1].split(';var')[0]
-                raw_data = json.loads(json_str)
-            else:
-                 logging.error("Scraping failed: 'ytInitialPlayerResponse' not found.")
-                 return None, None
+            if 'ytInitialPlayerResponse = ' not in response.text:
+                logging.error("Scraping failed: 'ytInitialPlayerResponse' not found.")
+                return None, None
+            
+            json_str = response.text.split('ytInitialPlayerResponse = ')[1].split(';var')[0]
+            raw_data = json.loads(json_str)
             caption_tracks = raw_data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+            
             for lang_code in self.supported_languages:
                 for track in caption_tracks:
-                    if track.get("languageCode") == lang_code:
-                        transcript_url = track.get("baseUrl")
-                        if transcript_url:
-                            transcript_response = self._make_request_with_retry(f"{transcript_url}&fmt=json3", use_proxy=use_proxy)
-                            if transcript_response:
-                                try:
-                                    parsed = self._parse_scraped_transcript_json(transcript_response.json())
-                                    return parsed, lang_code
-                                except json.JSONDecodeError:
-                                    parsed = self._parse_scraped_transcript_xml(transcript_response.text)
-                                    if parsed: return parsed, lang_code
+                    if track.get("languageCode") == lang_code and track.get("baseUrl"):
+                        transcript_response = self._make_request_with_retry(f"{track['baseUrl']}&fmt=json3", use_proxy=use_proxy)
+                        if transcript_response:
+                            try: return self._parse_scraped_transcript_json(transcript_response.json()), lang_code
+                            except json.JSONDecodeError:
+                                parsed = self._parse_scraped_transcript_xml(transcript_response.text)
+                                if parsed: return parsed, lang_code
             return None, None
         except Exception as e:
             logging.error(f"Error during scrape session (proxy={use_proxy}): {e}", exc_info=True)
