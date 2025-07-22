@@ -34,7 +34,10 @@ class YouTubeProcessor:
         
         # Initialize proxy settings
         self._init_proxies()
+        if not self.has_proxies:
+            raise Exception("PROXY_CONFIG_ERROR: Webshare username or password environment variables are NOT SET. Proxies are disabled.")
 
+    
     def _init_configurations(self):
         """Initialize all non-proxy related configurations"""
         self.groq_api_key = os.getenv("GROQ_API_KEY")
