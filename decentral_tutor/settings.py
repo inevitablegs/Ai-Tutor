@@ -9,6 +9,9 @@ https://docs.djangoproject.com/en/4.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.0/ref/settings/
 """
+# Made this comment for auto redploy on railway
+
+
 import os
 from pathlib import Path
 from datetime import timedelta
