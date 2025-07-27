@@ -258,8 +258,8 @@ export async function fetchChapterResources(generationId) {
 
 
 export async function generateMultiVideoMCQs(videoUrls) {
-  if (!Array.isArray(videoUrls) || videoUrls.length !== 4) {
-    throw new Error("You must provide exactly 4 video URLs.");
+  if (!Array.isArray(videoUrls) || videoUrls.length === 0) { // Allow for fewer than 4 videos initially
+    throw new Error("You must provide a list of video URLs.");
   }
   const idToken = await getFirebaseIdToken();
   const csrfToken = await getCsrfToken();
@@ -268,8 +268,9 @@ export async function generateMultiVideoMCQs(videoUrls) {
   try {
     const response = await axios.post(`${API_BASE}/generate-multi-mcqs/`, {
       video_urls: videoUrls,
+    }, {
       headers: {
-        Authorization: `Bearer ${idToken}`,
+        // Authorization: `Bearer ${idToken}`,
         "X-CSRFToken": csrfToken,
         "Content-Type": "application/json",
       },
@@ -278,7 +279,14 @@ export async function generateMultiVideoMCQs(videoUrls) {
     return response.data; // Contains { status, total_questions, questions, saved_to }
   } catch (error) {
     console.error("Failed to generate MCQs:", error.response?.data || error.message);
-    throw error;
+    
+    // CHANGED: Throw a more specific error message from the backend if it exists
+    if (error.response && error.response.data && error.response.data.error) {
+      throw new Error(error.response.data.error);
+    }
+    
+    // Fallback to a generic error
+    throw new Error("An unexpected error occurred while generating the quiz.");
   }
 }
 

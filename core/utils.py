@@ -89,63 +89,124 @@ def generate_chapter_names(topic: str, grade: str) -> List[str]:
     
     return chapters
 
+
+from concurrent.futures import ThreadPoolExecutor
+import logging
+
 def get_video_resources(topic: str, grade: str, chapter_name: str) -> List[VideoResource]:
+    """
+    Fetches relevant YouTube videos and filters them to return only those
+    that have an available transcript.
+    """
     query = f"{topic} {chapter_name} tutorial for {grade} grade"
-    results = YoutubeSearch(query, max_results=20).to_dict()  # Get more results to filter from
+    # Fetch a slightly larger pool of initial results to increase chances of finding valid ones
+    initial_results = YoutubeSearch(query, max_results=12).to_dict()
     
-    videos = []
-    for result in results:
-        # Parse duration (format is either MM:SS or HH:MM:SS)
-        duration_str = result["duration"]
-        duration_parts = duration_str.split(':')
+    if not initial_results:
+        return []
+
+    # --- NEW: Check for transcript availability in parallel ---
+    valid_videos_with_transcript = []
+    
+    def check_video(result):
+        """Helper function to check a single video and return its data if valid."""
+        video_url = f"https://youtube.com{result['url_suffix']}"
         
+        # We can also pre-filter by duration here to save API calls
+        duration_str = result.get("duration", "0:0")
         try:
-            if len(duration_parts) == 2:  # MM:SS format
-                minutes = int(duration_parts[0])
-                seconds = int(duration_parts[1])
-                total_seconds = minutes * 60 + seconds
-            elif len(duration_parts) == 3:  # HH:MM:SS format
-                hours = int(duration_parts[0])
-                minutes = int(duration_parts[1])
-                seconds = int(duration_parts[2])
-                total_seconds = hours * 3600 + minutes * 60 + seconds
+            parts = list(map(int, duration_str.split(':')))
+            if len(parts) == 2:
+                total_seconds = parts[0] * 60 + parts[1]
+            elif len(parts) == 3:
+                total_seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
             else:
-                continue  # Skip if duration format is unexpected
+                return None # Invalid duration format
             
-            # Convert to minutes for comparison
-            duration_minutes = total_seconds / 60
-            
-            # Check if duration is between 3 and 90 minutes
-            if 3 <= duration_minutes <= 90:
-                videos.append({
-                    "title": result["title"],
-                    "url": f"https://youtube.com{result['url_suffix']}",
-                    "channel": result["channel"],
-                    "duration": duration_str,
-                    "duration_minutes": round(duration_minutes, 1)  # Added for convenience
-                })
-                
-                # Stop when we have 4 qualifying videos
-                if len(videos) >= 4:
-                    break
-                    
+            # Filter duration: 3 to 90 minutes
+            if not (180 <= total_seconds <= 5400):
+                return None
         except (ValueError, IndexError):
-            continue  # Skip if duration parsing fails
+            return None # Skip if duration parsing fails
+
+        # Now, check for transcript availability (this is the key step)
+        if check_transcript_availability(video_url):
+            return {
+                "title": result["title"],
+                "url": video_url,
+                "channel": result["channel"],
+                "duration": result["duration"],
+            }
+        return None
+
+    # Use a thread pool to check multiple videos concurrently for speed
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        # Map the check_video function to each result
+        future_results = executor.map(check_video, initial_results)
+        
+        # Collect non-None results (i.e., videos that are valid)
+        for video_data in future_results:
+            if video_data:
+                valid_videos_with_transcript.append(video_data)
+
+    logging.info(f"Found {len(valid_videos_with_transcript)} videos with available transcripts for query: '{query}'")
     
-    return videos
+    # Return the top 4 valid videos
+    return valid_videos_with_transcript[:4]
+
+
+def check_transcript_availability(video_url: str) -> bool:
+    """
+    Lightweight check to see if a transcript is available for a video
+    without processing the full content.
+    """
+    try:
+        video_id = yt_processor.extract_video_id(video_url)
+        # get_transcript handles API calls and scraping fallbacks
+        transcript, _ = yt_processor.get_transcript(video_id)
+        
+        if transcript and isinstance(transcript, list) and len(transcript) > 0:
+            logging.info(f"Transcript CHECK PASSED for video: {video_url}")
+            return True
+        else:
+            logging.warning(f"Transcript CHECK FAILED for video: {video_url}")
+            return False
+    except Exception as e:
+        logging.error(f"Exception during transcript check for {video_url}: {e}")
+        return False
+
 
 def get_web_resources(topic: str, grade: str, chapter_name: str) -> List[WebResource]:
-    query = f"{topic} {chapter_name} tutorial OR guide for {grade} grade"
-    search_results = tavily.search(query=query, include_raw_content=False, max_results=5)
+    """
+    Fetches web resources for a given topic, grade, and chapter,
+    explicitly excluding results from YouTube.
+    """
+    # --- CHANGE 1: Add "site:!youtube.com" to the query to exclude YouTube at the source ---
+    query = f"{topic} {chapter_name} tutorial OR guide for {grade} grade site:!youtube.com"
+    
+    # Use Tavily search API
+    search_results = tavily.search(query=query, include_raw_content=False, max_results=7) # Fetch a few extra to filter
     
     resources = []
-    for result in search_results.get('results', [])[:4]:
+    
+    # --- CHANGE 2: Add a fallback filter to ensure no YouTube links slip through ---
+    for result in search_results.get('results', []):
+        url = result.get('url', '')
+        
+        # Skip if the URL is from YouTube (case-insensitive check)
+        if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+            continue
+            
         resources.append({
             "title": result.get('title', 'No title available'),
-            "url": result.get('url', '#'),
-            "source": result.get('url', '').split('/')[2] if '/' in result.get('url', '') else 'Unknown'
+            "url": url,
+            "source": url.split('/')[2] if url and '/' in url else 'Unknown'
         })
-    
+        
+        # Ensure we don't return more than 4 results
+        if len(resources) >= 4:
+            break
+            
     return resources
 
 def display_chapters(chapter_names: List[str]):
@@ -228,89 +289,108 @@ def srt_time_to_seconds(time_str: str) -> float:
     return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(mmm)/1000
 
 def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tuple:
-    """Generate MCQ questions from transcript chunks using Gemini with YouTube links"""
-    transcript_with_timestamps = "\n\n".join(
-        f"[{chunk['time_range']} (or {int(chunk['start_seconds'])}s)] {chunk['text']}" 
+    # --- BUG FIX: Validate transcript content before processing ---
+    if not transcript_chunks:
+        logging.warning(f"Validation failed for video {video_id}: No transcript chunks provided.")
+        return "No transcript available for this video.", []
+
+    transcript_with_timestamps = "\n".join(
+        f"[{chunk['time_range']}] {chunk['text']}" 
         for chunk in transcript_chunks
     )
 
+    full_text_sample = transcript_with_timestamps.lower()
+    if "never gonna give you up" in full_text_sample or len(full_text_sample) < 200:
+        logging.error(f"Validation failed for video {video_id}: Transcript appears invalid or is a placeholder.")
+        return "Invalid or placeholder transcript found.", []
+        
+    # --- BUG FIX: New, more robust prompt to ensure timestamp accuracy ---
     prompt = f"""
-    I will provide you with a video transcript that includes timestamps. 
-    Please generate 5-6 high quality multiple choice questions (MCQs) based on the key concepts and topics discussed in the video.
+    Your task is to generate 5 high-quality multiple-choice questions (MCQs) from the provided video transcript.
 
-    Requirements:
-    1. Questions should test understanding of important concepts, not trivial details
-    2. Each question must be directly answerable from the transcript
-    3. Include 4 plausible options for each question (a, b, c, d)
-    4. Mark the correct answer with an asterisk (*)
-    5. For each question, include:
-       - The original timestamp (HH:MM:SS,mmm)
-       - The time in seconds (for YouTube URL timestamp)
-       - A clickable YouTube URL with the timestamp (format: https://youtu.be/VIDEO_ID?t=SECONDSs)
-    6. Give proper explaination of the why correct answer is correct. And try to not include timestamps in explaination
-    7. Format exactly as shown.
+    Follow this process STRICTLY for EACH question:
+    1.  **Identify a Core Concept:** Find a specific, important piece of information in the transcript.
+    2.  **Locate Timestamp:** Find the exact timestamp marker (e.g., `[00:01:23,456 --> 00:01:26,789]`) immediately preceding that piece of information. This is the most critical step.
+    3.  **Formulate Question:** Create an MCQ that tests understanding of that *specific* concept.
+    4.  **Format Output:** Present the question, 4 plausible options (a, b, c, d), the correct answer with an asterisk (*), a clear explanation, and the *exact* timestamp and YouTube link you identified in step 2. Use the start time for the YouTube link.
 
-    Example format:
-    1. What is X?
-    a) One
-    b) Two
-    c) Three*
-    d) Four
-    Timestamp: [00:01:30,000]
-    Seconds: 90
-    Watch at: https://youtu.be/VIDEO_ID?t=90s
-    Explaination: This is because...
-    
-    Transcript with timestamps:
+    **CRITICAL RULE:** The timestamp for each question MUST correspond to the part of the transcript the question is based on. Do not guess or use a random timestamp.
+
+    Example format for a single question:
+    1. What is the primary function of a transformer in a neural network?
+    a) To perform convolutions
+    b) To manage recurrent states
+    c) To handle sequential data through self-attention*
+    d) To reduce dimensionality
+    Timestamp: [00:12:45,123]
+    Seconds: 765
+    Explanation: The transcript at this moment explains that transformers use the self-attention mechanism to weigh the importance of different words...
+    Watch at: https://youtu.be/VIDEO_ID?t=765s
+
+    --- TRANSCRIPT BEGINS ---
     {transcript_with_timestamps}
+    --- TRANSCRIPT ENDS ---
     """
+
     try:
         response = model.generate_content(prompt)
-        output = response.text.replace("VIDEO_ID", video_id)
+        raw_output = response.text.replace("VIDEO_ID", video_id)
 
-        # Parse the text into JSON
-        mcq_blocks = re.split(r"\n\d+\.\s", "\n" + output.strip())
-        mcq_list = []
+        # --- BUG FIX: Robust regex-based parsing ---
+        mcq_blocks = re.split(r'\n(?=\d+\.)', raw_output.strip())
+        parsed_mcqs = []
 
-        for block in mcq_blocks[1:]:  # First is empty due to split
-            lines = block.strip().split('\n')
-            question = lines[0].strip()
+        for block in mcq_blocks:
+            if not block.strip(): continue
+            
+            question_match = re.search(r'^\d+\.\s(.*?)\n', block, re.DOTALL)
+            timestamp_match = re.search(r'Timestamp:\s*\[(.*?)(?: -->.*)?\]', block)
+            seconds_match = re.search(r'Seconds:\s*(\d+)', block)
+            explanation_match = re.search(r'Explanation:\s*(.*?)(?=\nWatch at:|\Z)', block, re.DOTALL)
+            watch_at_match = re.search(r'Watch at:\s*(https?://\S+)', block)
+
+            if not all([question_match, timestamp_match, explanation_match, watch_at_match]):
+                logging.warning(f"Skipping malformed MCQ block: {block}")
+                continue
+
+            question = question_match.group(1).strip()
+            timestamp = timestamp_match.group(1).strip()
+            explanation = explanation_match.group(1).strip()
+            url = watch_at_match.group(1).strip()
+            seconds = int(seconds_match.group(1)) if seconds_match else srt_time_to_seconds(timestamp)
+
             options = {}
-            correct = ""
-            for line in lines:
-                match = re.match(r"([a-d])\)\s(.+?)(\*?)$", line.strip())
-                if match:
-                    opt = match.group(1)
-                    text = match.group(2).strip()
-                    is_correct = match.group(3) == '*'
-                    options[opt] = text
-                    if is_correct:
-                        correct = opt
+            correct_answer = ""
+            for opt_match in re.finditer(r'([a-d])\)\s(.*?)(?:\*|\n)', block):
+                opt_letter = opt_match.group(1)
+                opt_text = opt_match.group(2).strip()
+                options[opt_letter] = opt_text
+                if '*' in opt_match.group(0):
+                    correct_answer = opt_letter
 
+            if not question or not options or not correct_answer:
+                logging.warning(f"Skipping block with missing core components: {block}")
+                continue
 
-            timestamp_line = [l for l in lines if "Timestamp" in l][0]
-            seconds_line = [l for l in lines if "Seconds" in l][0]
-            url_line = [l for l in lines if "Watch at" in l][0]
-
-            # Find explanation block (everything after "Watch at")
-            explanation_index = lines.index(url_line) + 1
-            explanation = "\n".join(lines[explanation_index:]).strip()
-
-            mcq_list.append({
+            parsed_mcqs.append({
                 "question": question,
                 "options": options,
-                "correct_answer": correct,
-                "timestamp": timestamp_line.split(":", 1)[1].strip(" []"),
-                "seconds": int(seconds_line.split(":")[1].strip()),
-                "youtube_url": url_line.split(":", 1)[1].strip(),
+                "correct_answer": correct_answer,
+                "timestamp": timestamp,
+                "seconds": seconds,
+                "youtube_url": url,
                 "explanation": explanation
             })
+        
+        if not parsed_mcqs:
+            logging.warning(f"LLM output could not be parsed into any MCQs. Raw output: {raw_output}")
+            return raw_output, []
 
-        return output, mcq_list
+        return raw_output, parsed_mcqs
 
     except Exception as e:
-        print(f"Error generating MCQs: {str(e)}")
-        return None, None
+        logging.error(f"Error generating or parsing MCQs: {e}", exc_info=True)
+        return f"An error occurred: {e}", []
 
 def get_transcript_chunks_from_youtube(video_url: str, languages: list = ['en', 'hi']) -> list:
     """Get transcript chunks using YouTubeProcessor with proxy support"""
@@ -334,6 +414,7 @@ def get_transcript_chunks_from_youtube(video_url: str, languages: list = ['en', 
     except Exception as e:
         print(f"[ERROR] Failed to get transcript chunks: {str(e)}")
         return []
+
 
 if __name__ == "__main__":
     print("Study Resource Generator")

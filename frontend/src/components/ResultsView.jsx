@@ -88,25 +88,37 @@ function ResultsView({
   };
 
   const handleGenerateQuiz = async () => {
-    // setShowQuizNotice(true);
-    // console.log("Generating quiz for these videos:", videos);
-     setQuizLoading(true); // start loading
+     setQuizLoading(true);
+     setError(""); // Clear previous errors
 
      try {
        const res = await generateMultiVideoMCQs(videos);
-       if (res.error) {
-         setError(res.error);
-       } else {
+       
+       // CHANGED: Check for the new 'message' field from the backend
+       if (res.message) {
+         // Use an alert to inform the user about the partial success.
+         // This is a simple, non-intrusive way to provide feedback.
+         alert(res.message); 
+       }
+
+       if (res.questions && res.questions.length > 0) {
          console.log("Quiz generated successfully:", res);
          setQuestions(res.questions);
          setUserAnswers({});
          setCurrent(0);
+         setShowResults(false); // Make sure results view is off before navigating
          navigate("/quiz");
+       } else {
+         // Handle cases where the API succeeds but returns no questions
+         setError("AI could not generate questions from the available videos. Please try different ones.");
        }
+
      } catch (err) {
-       setError(err.message || "Failed to generate quiz");
+       // The error message will now be the specific one from the backend
+       // (e.g., "None of the provided videos have available transcripts...")
+       setError(err.message); 
      } finally {
-       setQuizLoading(false); // stop loading
+       setQuizLoading(false);
      }
   };
 

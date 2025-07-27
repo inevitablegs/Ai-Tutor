@@ -763,35 +763,64 @@ class YouTubeVideoDeleteAPI(APIView):
                 'message': 'Failed to delete video'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
+# Replace the existing MultiVideoMCQAPI class in Ai-Tutor/core/api.py
+
 from concurrent.futures import ThreadPoolExecutor
 import json
-
 from django.conf import settings
 from .utils import (
     get_video_id,
-    download_youtube_transcript,
-    parse_transcript,
-    generate_mcqs_from_transcript
+    generate_mcqs_from_transcript,
+    get_transcript_chunks_from_youtube,
+    check_transcript_availability  # <-- Import the new helper function
 )
-
 
 class MultiVideoMCQAPI(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         video_urls = request.data.get("video_urls")
-        if not video_urls or len(video_urls) != 4:
-            return JsonResponse({"error": "Provide exactly 4 video URLs"}, status=400)
+        if not video_urls or not isinstance(video_urls, list) or len(video_urls) == 0:
+            return JsonResponse({"error": "Provide a list of video URLs"}, status=400)
 
-        goal_distribution = [2, 3, 2, 3]
+        # --- STEP 1: PRE-FLIGHT CHECK FOR TRANSCRIPTS ---
+        print("--- Starting transcript availability check for all videos ---")
+        valid_videos = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # Check availability in parallel
+            results = list(executor.map(check_transcript_availability, [v['url'] if isinstance(v, dict) else v for v in video_urls]))
+        
+        for i, is_available in enumerate(results):
+            if is_available:
+                # Store the original URL (string or dict)
+                valid_videos.append(video_urls[i])
+        
+        print(f"--- Transcript check complete. Found {len(valid_videos)} valid videos. ---")
 
-        from .utils import get_transcript_chunks_from_youtube
+        # --- STEP 2: HANDLE CASE WHERE NO VIDEOS HAVE TRANSCRIPTS ---
+        if not valid_videos:
+            return JsonResponse({
+                "error": "None of the provided videos have available transcripts. Please try different videos.",
+                "status": False
+            }, status=404) # Not Found is appropriate here
 
+        # --- STEP 3: DYNAMICALLY DISTRIBUTE THE QUESTION GOAL ---
+        total_questions_goal = 10
+        num_valid_videos = len(valid_videos)
+        
+        questions_per_video = total_questions_goal // num_valid_videos
+        remainder = total_questions_goal % num_valid_videos
+        
+        goal_distribution = [questions_per_video] * num_valid_videos
+        for i in range(remainder):
+            goal_distribution[i] += 1
+        
+        print(f"Dynamic goal distribution for {num_valid_videos} videos: {goal_distribution}")
+
+        # --- STEP 4: PROCESS ONLY THE VALID VIDEOS ---
         def process_video(video_url):
             try:
-                # Extract URL from dict if needed
                 video_url_str = video_url["url"] if isinstance(video_url, dict) else video_url
-
                 transcript_chunks = get_transcript_chunks_from_youtube(video_url_str)
                 if not transcript_chunks:
                     return []
@@ -804,12 +833,10 @@ class MultiVideoMCQAPI(APIView):
                 print(f"[ERROR] Processing failed for {video_url}: {str(e)}")
                 return []
 
+        with ThreadPoolExecutor(max_workers=num_valid_videos) as executor:
+            all_mcqs = list(executor.map(process_video, valid_videos))
 
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            all_mcqs = list(executor.map(process_video, video_urls))
-
-        # Step 1: Try to assign original goal distribution
+        # --- STEP 5: COMBINE RESULTS (same logic as before) ---
         combined_questions = []
         leftovers = []
 
@@ -820,15 +847,12 @@ class MultiVideoMCQAPI(APIView):
                 if len(mcqs) > goal:
                     leftovers.extend(mcqs[goal:])
             else:
-                # This video failed or returned empty
                 continue
 
-        # Step 2: Fill remaining questions from leftovers if total < 10
-        while len(combined_questions) < 10 and leftovers:
+        while len(combined_questions) < total_questions_goal and leftovers:
             combined_questions.append(leftovers.pop(0))
 
-        # Step 3: If still not enough, just return what we have
-        combined_questions = combined_questions[:10]
+        combined_questions = combined_questions[:total_questions_goal]
 
         # Save to JSON
         save_path = os.path.join(settings.BASE_DIR, "transcripts", "multi_mcqs.json")
@@ -840,5 +864,6 @@ class MultiVideoMCQAPI(APIView):
             "status": True,
             "total_questions": len(combined_questions),
             "questions": combined_questions,
+            "message": f"Quiz generated from {num_valid_videos} out of {len(video_urls)} provided videos.",
             "saved_to": "/transcripts/multi_mcqs.json"
         }, status=200)
