@@ -1,142 +1,72 @@
 [
     {
-        "question": "**What is the primary benefit of testing in modern software engineering, according to the video?**",
+        "question": "What is the role of the client in a client-server interaction, using the example of an Angular application?",
         "options": {
-            "a": "Increased development speed only",
-            "b": "Improved developer collaboration only",
-            "c": "Development of robust and secure applications, prevention of bugs, and increased developer confidence",
-            "d": "Facilitating CI/CD processes only"
+            "a": "To process HTTP requests and send responses.",
+            "b": "To act as a web server and store data.",
+            "c": "To initiate HTTP requests and receive responses from the server.",
+            "d": "To manage the database and business logic."
         },
         "correct_answer": "c",
-        "timestamp": "00:00:00,359",
-        "seconds": 0,
-        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=0s",
-        "explanation": "The initial section of the transcript highlights that testing leads to robust and secure applications, bug prevention, and boosts developer confidence in their code.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=0s"
+        "timestamp": "00:00:54,320",
+        "seconds": 54,
+        "youtube_url": "https://youtu.be/B8fomQbKUwQ?t=54s",
+        "explanation": "This section clearly explains that the client (e.g., a browser or mobile device using an Angular application) sends requests to the server. The server processes these and sends back responses."
     },
     {
-        "question": "**How does test-driven development (TDD) differ from the approach used in this video series?**",
+        "question": "Which HTTP methods are mentioned in the context of client requests to the server?",
         "options": {
-            "a": "TDD involves writing code first, then tests; this series does the opposite.",
-            "b": "TDD uses only unit tests; this series uses only integration tests.",
-            "c": "TDD focuses on integration testing; this series emphasizes unit testing.",
-            "d": "TDD is only for Django; this series is for general web application testing."
-        },
-        "correct_answer": "a",
-        "timestamp": "00:01:35,799",
-        "seconds": 95,
-        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=95s",
-        "explanation": "The speaker explicitly states that while TDD advocates writing tests before code, this series will follow a different approach: writing code then tests, for improved understanding of Django testing.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=95s"
-    },
-    {
-        "question": "**Which type of testing verifies that multiple components of an application work together correctly?**",
-        "options": {
-            "a": "Unit testing",
-            "b": "End-to-end testing",
-            "c": "Smoke testing",
-            "d": "Integration testing"
-        },
-        "correct_answer": "d",
-        "timestamp": "00:02:36,560",
-        "seconds": 156,
-        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=156s",
-        "explanation": "The transcript clearly defines integration tests as verifying the correct interaction of multiple application components (functions, classes, modules).\n    Watch at: https://youtu.be/7_x0wAli2aM?t=156s"
-    },
-    {
-        "question": "**What is the primary function of a Django view?**",
-        "options": {
-            "a": "To manage database connections",
-            "b": "To handle user authentication",
-            "c": "To take a web request and return a web response",
-            "d": "To render templates exclusively"
+            "a": "GET and PUT only",
+            "b": "POST and DELETE only",
+            "c": "GET, POST, PUT, and DELETE",
+            "d": "Only GET requests are used"
         },
         "correct_answer": "c",
-        "timestamp": "00:00:00,240",
-        "seconds": 0,
-        "youtube_url": "https://youtu.be/la69esudPYY?t=0s",
-        "explanation": "The transcript clearly states that Django views are functions that take a web request and return a web response, performing logic in between.\n    Watch at: https://youtu.be/la69esudPYY?t=0s  (Replace la69esudPYY with the actual YouTube video ID)"
+        "timestamp": "00:01:49,719",
+        "seconds": 100,
+        "youtube_url": "https://youtu.be/B8fomQbKUwQ?t=100s",
+        "explanation": "The transcript explicitly lists GET, POST, PUT, and DELETE as examples of HTTP methods used in client-server communication."
     },
     {
-        "question": "**What shortcut function is used to render a template in a Django view?**",
+        "question": "What HTTP status code indicates a successful server response?",
         "options": {
-            "a": "`template_render`",
-            "b": "`display_template`",
-            "c": "`render`",
-            "d": "`view_template`"
+            "a": "404",
+            "b": "500",
+            "c": "200",
+            "d": "403"
         },
         "correct_answer": "c",
-        "timestamp": "00:00:31,599",
-        "seconds": 31,
-        "youtube_url": "https://youtu.be/la69esudPYY?t=31s",
-        "explanation": "The transcript explicitly mentions using the `render` shortcut function to render templates within the Django view.\n    Watch at: https://youtu.be/la69esudPYY?t=31s (Replace la69esudPYY with the actual YouTube video ID)"
+        "timestamp": "00:02:49,760",
+        "seconds": 170,
+        "youtube_url": "https://youtu.be/B8fomQbKUwQ?t=170s",
+        "explanation": "The video explains that a 200 status code signifies a successful request.  404 is \"Not Found,\" 500 is a server error."
     },
     {
-        "question": "What are the two main types of tests discussed for backend development in this video?",
+        "question": "What technology does the speaker use as an example for managing asynchronous operations in the client (Angular)?",
         "options": {
-            "a": "Unit tests and performance tests",
-            "b": "Unit tests and integration tests",
-            "c": "Integration tests and security tests",
-            "d": "Functional tests and load tests"
+            "a": "Asynchronous functions",
+            "b": "Callbacks",
+            "c": "Observables and Promises",
+            "d": "Threads"
+        },
+        "correct_answer": "c",
+        "timestamp": "00:04:39,560",
+        "seconds": 279,
+        "youtube_url": "https://youtu.be/B8fomQbKUwQ?t=279s",
+        "explanation": "The transcript explicitly mentions Angular's use of Observables and Promises to handle asynchronous operations."
+    },
+    {
+        "question": "What security measure is mentioned to protect data transmitted between client and server?",
+        "options": {
+            "a": "Firewalls",
+            "b": "HTTPS",
+            "c": "Two-factor authentication",
+            "d": "Data masking"
         },
         "correct_answer": "b",
-        "timestamp": "00:01:31,759",
-        "seconds": 91,
-        "youtube_url": "https://youtu.be/yyfUAzVeJQ0?t=91s",
-        "explanation": "The speaker explicitly mentions \"unit test\" and \"integration test\" as the two main types of tests used in backend development at this timestamp.\n    Watch at: https://youtu.be/yyfUAzVeJQ0?t=91s"
-    },
-    {
-        "question": "What is the purpose of the `setup` function in the provided testing code?",
-        "options": {
-            "a": "To run the tests in a specific order",
-            "b": "To initiate a client object and create a product object before each test function",
-            "c": "To tear down the test environment after each test function",
-            "d": "To report the results of each test function"
-        },
-        "correct_answer": "b",
-        "timestamp": "00:05:41,280",
-        "seconds": 341,
-        "youtube_url": "https://youtu.be/yyfUAzVeJQ0?t=341s",
-        "explanation": "The explanation at this point clearly states that the `setup` function is called before each test and is used to initialize a client and a product object.\n    Watch at: https://youtu.be/yyfUAzVeJQ0?t=341s"
-    },
-    {
-        "question": "**What is a key characteristic of end-to-end (E2E) tests?**",
-        "options": {
-            "a": "They focus on individual functions.",
-            "b": "They simulate a complete user journey through the system.",
-            "c": "They are primarily used for small-scale applications.",
-            "d": "They only test the backend functionality."
-        },
-        "correct_answer": "b",
-        "timestamp": "00:03:12,319",
-        "seconds": 192,
-        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=192s",
-        "explanation": "The description of E2E tests specifically mentions simulating the entire user flow from start to finish.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=192s"
-    },
-    {
-        "question": "**According to the video, what is one major reason for testing Django applications?**",
-        "options": {
-            "a": "Django's simplicity necessitates minimal testing.",
-            "b": "Testing is only needed for large-scale applications.",
-            "c": "To ensure code integrity and prevent regressions from happening.",
-            "d": "Testing only benefits individual developers."
-        },
-        "correct_answer": "c",
-        "timestamp": "00:04:16,919",
-        "seconds": 256,
-        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=256s",
-        "explanation": "The video lists reasons for testing Django apps, and preventing regressions and maintaining code integrity are clearly stated.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=256s"
-    },
-    {
-        "question": "**Which Django test class *does not* allow database access?**",
-        "options": {
-            "a": "`TestCase`",
-            "b": "`TransactionTestCase`",
-            "c": "`SimpleTestCase`",
-            "d": "`LiveServerTestCase`"
-        },
-        "correct_answer": "c",
-        "timestamp": "00:03:45,760",
-        "seconds": 225,
-        "youtube_url": "https://youtu.be/la69esudPYY?t=225s",
-        "explanation": "The transcript explains the hierarchy of Django test classes, highlighting that `SimpleTestCase` is a direct subclass of `unittest.TestCase` and doesn't allow database access.\n    Watch at: https://youtu.be/la69esudPYY?t=225s (Replace la69esudPYY with the actual YouTube video ID)"
+        "timestamp": "00:05:29,600",
+        "seconds": 329,
+        "youtube_url": "https://youtu.be/B8fomQbKUwQ?t=329s",
+        "explanation": "The video mentions HTTPS as a security measure to encrypt data during transmission."
     }
 ]

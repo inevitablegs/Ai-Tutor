@@ -110,24 +110,22 @@ import logging
 
 def get_video_resources(topic: str, grade: str, chapter_name: str) -> List[VideoResource]:
     """
-    Fetches relevant YouTube videos and filters them to return only those
-    that have an available transcript.
+    Fetches relevant YouTube videos without checking transcript availability.
     """
     query = f"{topic} {chapter_name} tutorial for {grade} grade"
-    # Fetch a slightly larger pool of initial results to increase chances of finding valid ones
+    
+    # Fetch a slightly larger pool of initial results
     initial_results = YoutubeSearch(query, max_results=12).to_dict()
     
     if not initial_results:
         return []
 
-    # --- NEW: Check for transcript availability in parallel ---
-    valid_videos_with_transcript = []
+    valid_videos = []
     
     def check_video(result):
-        """Helper function to check a single video and return its data if valid."""
+        """Helper function to filter videos by duration."""
         video_url = f"https://youtube.com{result['url_suffix']}"
         
-        # We can also pre-filter by duration here to save API calls
         duration_str = result.get("duration", "0:0")
         try:
             parts = list(map(int, duration_str.split(':')))
@@ -136,38 +134,29 @@ def get_video_resources(topic: str, grade: str, chapter_name: str) -> List[Video
             elif len(parts) == 3:
                 total_seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
             else:
-                return None # Invalid duration format
-            
-            # Filter duration: 3 to 90 minutes
+                return None
             if not (180 <= total_seconds <= 5400):
                 return None
         except (ValueError, IndexError):
-            return None # Skip if duration parsing fails
+            return None
 
-        # Now, check for transcript availability (this is the key step)
-        if check_transcript_availability(video_url):
-            return {
-                "title": result["title"],
-                "url": video_url,
-                "channel": result["channel"],
-                "duration": result["duration"],
-            }
-        return None
+        return {
+            "title": result["title"],
+            "url": video_url,
+            "channel": result["channel"],
+            "duration": result["duration"],
+        }
 
-    # Use a thread pool to check multiple videos concurrently for speed
     with ThreadPoolExecutor(max_workers=5) as executor:
-        # Map the check_video function to each result
         future_results = executor.map(check_video, initial_results)
-        
-        # Collect non-None results (i.e., videos that are valid)
         for video_data in future_results:
             if video_data:
-                valid_videos_with_transcript.append(video_data)
+                valid_videos.append(video_data)
 
-    logging.info(f"Found {len(valid_videos_with_transcript)} videos with available transcripts for query: '{query}'")
+    logging.info(f"Found {len(valid_videos)} valid YouTube videos for query: '{query}'")
     
-    # Return the top 4 valid videos
-    return valid_videos_with_transcript[:4]
+    return valid_videos[:4]
+
 
 
 def check_transcript_availability(video_url: str) -> bool:
@@ -321,7 +310,7 @@ def generate_mcqs_from_transcript(transcript_chunks: list, video_id: str) -> tup
         
     # --- BUG FIX: New, more robust prompt to ensure timestamp accuracy ---
     prompt = f"""
-    Your task is to generate 5 high-quality multiple-choice questions (MCQs) from the provided video transcript.
+    Your task is to generate high-quality multiple-choice questions (MCQs) from the provided video transcript.
 
     Follow this process STRICTLY for EACH question:
     1.  **Identify a Core Concept:** Find a specific, important piece of information in the transcript.
@@ -429,48 +418,3 @@ def get_transcript_chunks_from_youtube(video_url: str, languages: list = ['en', 
     except Exception as e:
         print(f"[ERROR] Failed to get transcript chunks: {str(e)}")
         return []
-
-
-if __name__ == "__main__":
-    print("Study Resource Generator")
-    topic = input("Enter your study topic: ").strip() or "Python Programming"
-    grade = input("Enter grade/standard level: ").strip() or "high school"
-    
-    try:
-        # First generate all chapter names
-        chapter_names = generate_chapter_names(topic, grade)
-        display_chapters(chapter_names)
-        
-        # Ask user which chapter they want resources for
-        while True:
-            try:
-                chapter_num = input("\nEnter chapter number to generate resources for (1-10) or 'q' to quit: ").strip()
-                if chapter_num.lower() == 'q':
-                    break
-                
-                chapter_num = int(chapter_num)
-                if 1 <= chapter_num <= 10:
-                    selected_chapter = chapter_names[chapter_num - 1]
-                    print(f"\nGenerating resources for Chapter {chapter_num}: {selected_chapter}...")
-                    
-                    # Generate resources only for the selected chapter
-                    videos = get_video_resources(topic, grade, selected_chapter)
-                    websites = get_web_resources(topic, grade, selected_chapter)
-                    
-                    chapter_output = {
-                        "name": selected_chapter,
-                        "youtube_videos": videos,
-                        "web_resources": websites
-                    }
-                    
-                    display_single_chapter_resources(chapter_output)
-                else:
-                    print("Please enter a number between 1 and 10.")
-            except ValueError:
-                print("Please enter a valid number or 'q' to quit.")
-                
-    except Exception as e:
-        print(f"Error: {e}")
-
-# Load environment variables
-load_dotenv()
