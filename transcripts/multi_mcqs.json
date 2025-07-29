@@ -1,128 +1,142 @@
 [
     {
-        "question": "What is the primary objective of computer vision, as explained in the video?",
+        "question": "**What is the primary benefit of testing in modern software engineering, according to the video?**",
         "options": {
-            "a": "To replicate human intelligence completely.",
-            "b": "To understand the content of digital images.",
-            "c": "To create realistic simulations of the visual world.",
-            "d": "To develop advanced robotics systems."
-        },
-        "correct_answer": "b",
-        "timestamp": "00:00:38,920",
-        "seconds": 39,
-        "youtube_url": "https://youtu.be/puB-4LuRNys?t=39s",
-        "explanation": "The transcript at this timestamp explicitly states that understanding the content of digital images is the main objective of computer vision."
-    },
-    {
-        "question": "What type of neural network is typically used in modern computer vision algorithms?",
-        "options": {
-            "a": "Recurrent Neural Networks (RNNs)",
-            "b": "Long Short-Term Memory networks (LSTMs)",
-            "c": "Convolutional Neural Networks (CNNs)",
-            "d": "Feedforward Neural Networks (FNNs)"
+            "a": "Increased development speed only",
+            "b": "Improved developer collaboration only",
+            "c": "Development of robust and secure applications, prevention of bugs, and increased developer confidence",
+            "d": "Facilitating CI/CD processes only"
         },
         "correct_answer": "c",
-        "timestamp": "00:01:20,119",
-        "seconds": 80,
-        "youtube_url": "https://youtu.be/puB-4LuRNys?t=80s",
-        "explanation": "The transcript at this point clearly mentions that computer vision algorithms rely on Convolutional Neural Networks (CNNs)."
+        "timestamp": "00:00:00,359",
+        "seconds": 0,
+        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=0s",
+        "explanation": "The initial section of the transcript highlights that testing leads to robust and secure applications, bug prevention, and boosts developer confidence in their code.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=0s"
     },
     {
-        "question": "According to the video, what significant improvement in accuracy has been observed in object identification in computer vision within a recent timeframe?",
+        "question": "**How does test-driven development (TDD) differ from the approach used in this video series?**",
         "options": {
-            "a": "From 10% to 70%",
-            "b": "From 25% to 90%",
-            "c": "From 50% to 99%",
-            "d": "From 75% to 95%"
+            "a": "TDD involves writing code first, then tests; this series does the opposite.",
+            "b": "TDD uses only unit tests; this series uses only integration tests.",
+            "c": "TDD focuses on integration testing; this series emphasizes unit testing.",
+            "d": "TDD is only for Django; this series is for general web application testing."
         },
-        "correct_answer": "c",
-        "timestamp": "00:01:57,320",
-        "seconds": 117,
-        "youtube_url": "https://youtu.be/puB-4LuRNys?t=117s",
-        "explanation": "The transcript states that accuracy in object identification has improved from 50% to 99% in less than a decade."
+        "correct_answer": "a",
+        "timestamp": "00:01:35,799",
+        "seconds": 95,
+        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=95s",
+        "explanation": "The speaker explicitly states that while TDD advocates writing tests before code, this series will follow a different approach: writing code then tests, for improved understanding of Django testing.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=95s"
     },
     {
-        "question": "What is the primary goal of semantic segmentation?",
+        "question": "**Which type of testing verifies that multiple components of an application work together correctly?**",
         "options": {
-            "a": "To divide an image into regions based on arbitrary criteria.",
-            "b": "To identify the boundaries of specific objects in an image.",
-            "c": "To assign a class label to every pixel in an image.",
-            "d": "To combine instance segmentation with object detection."
-        },
-        "correct_answer": "c",
-        "timestamp": "00:00:49,600",
-        "seconds": 49,
-        "youtube_url": "https://youtu.be/5QUmlXBb0MY?t=49s",
-        "explanation": "The transcript at this timestamp explicitly states that the goal of semantic segmentation is to assign a label (like \"car,\" \"building,\" etc.) to each pixel."
-    },
-    {
-        "question": "How does instance segmentation differ from semantic segmentation?",
-        "options": {
-            "a": "Instance segmentation uses bounding boxes, while semantic segmentation uses masks.",
-            "b": "Instance segmentation labels every pixel, while semantic segmentation only labels object boundaries.",
-            "c": "Instance segmentation differentiates between instances of the same class, while semantic segmentation does not.",
-            "d": "Instance segmentation is less computationally expensive than semantic segmentation."
-        },
-        "correct_answer": "c",
-        "timestamp": "00:01:37,439",
-        "seconds": 97,
-        "youtube_url": "https://youtu.be/5QUmlXBb0MY?t=97s",
-        "explanation": "The section highlights that instance segmentation distinguishes between individual instances of a class (e.g., person 1 vs. person 2), a key difference from semantic segmentation which only assigns class labels."
-    },
-    {
-        "question": "In what decade did computer vision first see commercial application, according to the video?",
-        "options": {
-            "a": "1960s",
-            "b": "1980s",
-            "c": "1970s",
-            "d": "1990s"
-        },
-        "correct_answer": "c",
-        "timestamp": "00:02:34,760",
-        "seconds": 155,
-        "youtube_url": "https://youtu.be/puB-4LuRNys?t=155s",
-        "explanation": "The video mentions the first commercial use of computer vision was in the 1970s to differentiate typed and handwritten text."
-    },
-    {
-        "question": "What is the defining characteristic of panoptic segmentation?",
-        "options": {
-            "a": "It only labels object boundaries.",
-            "b": "It assigns a class label to every pixel, differentiating instances of the same class.",
-            "c": "It uses bounding boxes to identify objects.",
-            "d": "It focuses solely on identifying the sky and trees in an image."
-        },
-        "correct_answer": "b",
-        "timestamp": "00:02:20,800",
-        "seconds": 140,
-        "youtube_url": "https://youtu.be/5QUmlXBb0MY?t=140s",
-        "explanation": "The transcript explains that panoptic segmentation combines the strengths of both semantic and instance segmentation, resulting in every pixel having a class label and instances of the same class being distinguishable."
-    },
-    {
-        "question": "In the provided example of semantic segmentation, what color represents the \"person\" class?",
-        "options": {
-            "a": "Light green",
-            "b": "Blue",
-            "c": "Dark green",
-            "d": "Red"
+            "a": "Unit testing",
+            "b": "End-to-end testing",
+            "c": "Smoke testing",
+            "d": "Integration testing"
         },
         "correct_answer": "d",
-        "timestamp": "00:00:49,600",
-        "seconds": 49,
-        "youtube_url": "https://youtu.be/5QUmlXBb0MY?t=49s",
-        "explanation": "The transcript explicitly states that red represents the \"person\" class in the given semantic segmentation example."
+        "timestamp": "00:02:36,560",
+        "seconds": 156,
+        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=156s",
+        "explanation": "The transcript clearly defines integration tests as verifying the correct interaction of multiple application components (functions, classes, modules).\n    Watch at: https://youtu.be/7_x0wAli2aM?t=156s"
     },
     {
-        "question": "Which type of segmentation combines semantic and instance segmentation?",
+        "question": "**What is the primary function of a Django view?**",
         "options": {
-            "a": "Semantic Segmentation",
-            "b": "Instance Segmentation",
-            "c": "Panoptic Segmentation",
-            "d": "Object Detection"
+            "a": "To manage database connections",
+            "b": "To handle user authentication",
+            "c": "To take a web request and return a web response",
+            "d": "To render templates exclusively"
         },
         "correct_answer": "c",
-        "timestamp": "00:03:10,000",
-        "seconds": 190,
-        "youtube_url": "https://youtu.be/5QUmlXBb0MY?t=190s",
-        "explanation": "The concluding summary explicitly states that panoptic segmentation combines the features of semantic and instance segmentation."
+        "timestamp": "00:00:00,240",
+        "seconds": 0,
+        "youtube_url": "https://youtu.be/la69esudPYY?t=0s",
+        "explanation": "The transcript clearly states that Django views are functions that take a web request and return a web response, performing logic in between.\n    Watch at: https://youtu.be/la69esudPYY?t=0s  (Replace la69esudPYY with the actual YouTube video ID)"
+    },
+    {
+        "question": "**What shortcut function is used to render a template in a Django view?**",
+        "options": {
+            "a": "`template_render`",
+            "b": "`display_template`",
+            "c": "`render`",
+            "d": "`view_template`"
+        },
+        "correct_answer": "c",
+        "timestamp": "00:00:31,599",
+        "seconds": 31,
+        "youtube_url": "https://youtu.be/la69esudPYY?t=31s",
+        "explanation": "The transcript explicitly mentions using the `render` shortcut function to render templates within the Django view.\n    Watch at: https://youtu.be/la69esudPYY?t=31s (Replace la69esudPYY with the actual YouTube video ID)"
+    },
+    {
+        "question": "What are the two main types of tests discussed for backend development in this video?",
+        "options": {
+            "a": "Unit tests and performance tests",
+            "b": "Unit tests and integration tests",
+            "c": "Integration tests and security tests",
+            "d": "Functional tests and load tests"
+        },
+        "correct_answer": "b",
+        "timestamp": "00:01:31,759",
+        "seconds": 91,
+        "youtube_url": "https://youtu.be/yyfUAzVeJQ0?t=91s",
+        "explanation": "The speaker explicitly mentions \"unit test\" and \"integration test\" as the two main types of tests used in backend development at this timestamp.\n    Watch at: https://youtu.be/yyfUAzVeJQ0?t=91s"
+    },
+    {
+        "question": "What is the purpose of the `setup` function in the provided testing code?",
+        "options": {
+            "a": "To run the tests in a specific order",
+            "b": "To initiate a client object and create a product object before each test function",
+            "c": "To tear down the test environment after each test function",
+            "d": "To report the results of each test function"
+        },
+        "correct_answer": "b",
+        "timestamp": "00:05:41,280",
+        "seconds": 341,
+        "youtube_url": "https://youtu.be/yyfUAzVeJQ0?t=341s",
+        "explanation": "The explanation at this point clearly states that the `setup` function is called before each test and is used to initialize a client and a product object.\n    Watch at: https://youtu.be/yyfUAzVeJQ0?t=341s"
+    },
+    {
+        "question": "**What is a key characteristic of end-to-end (E2E) tests?**",
+        "options": {
+            "a": "They focus on individual functions.",
+            "b": "They simulate a complete user journey through the system.",
+            "c": "They are primarily used for small-scale applications.",
+            "d": "They only test the backend functionality."
+        },
+        "correct_answer": "b",
+        "timestamp": "00:03:12,319",
+        "seconds": 192,
+        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=192s",
+        "explanation": "The description of E2E tests specifically mentions simulating the entire user flow from start to finish.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=192s"
+    },
+    {
+        "question": "**According to the video, what is one major reason for testing Django applications?**",
+        "options": {
+            "a": "Django's simplicity necessitates minimal testing.",
+            "b": "Testing is only needed for large-scale applications.",
+            "c": "To ensure code integrity and prevent regressions from happening.",
+            "d": "Testing only benefits individual developers."
+        },
+        "correct_answer": "c",
+        "timestamp": "00:04:16,919",
+        "seconds": 256,
+        "youtube_url": "https://youtu.be/7_x0wAli2aM?t=256s",
+        "explanation": "The video lists reasons for testing Django apps, and preventing regressions and maintaining code integrity are clearly stated.\n    Watch at: https://youtu.be/7_x0wAli2aM?t=256s"
+    },
+    {
+        "question": "**Which Django test class *does not* allow database access?**",
+        "options": {
+            "a": "`TestCase`",
+            "b": "`TransactionTestCase`",
+            "c": "`SimpleTestCase`",
+            "d": "`LiveServerTestCase`"
+        },
+        "correct_answer": "c",
+        "timestamp": "00:03:45,760",
+        "seconds": 225,
+        "youtube_url": "https://youtu.be/la69esudPYY?t=225s",
+        "explanation": "The transcript explains the hierarchy of Django test classes, highlighting that `SimpleTestCase` is a direct subclass of `unittest.TestCase` and doesn't allow database access.\n    Watch at: https://youtu.be/la69esudPYY?t=225s (Replace la69esudPYY with the actual YouTube video ID)"
     }
 ]

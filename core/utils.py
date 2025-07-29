@@ -76,18 +76,33 @@ def generate_chapter_names(topic: str, grade: str) -> List[str]:
         10.
         """
     
-    response = model.generate_content(prompt)
-    chapters = []
-    
-    for line in response.text.split('\n'):
-        line = line.strip()
-        if line and line[0].isdigit():
-            chapter_name = line.split('.', 1)[1].strip()
-            chapters.append(chapter_name)
-            if len(chapters) == 10:
-                break
-    
-    return chapters
+    try:
+        response = model.generate_content(prompt)
+        chapters = []
+        
+        # --- FIX 4: More robust parsing logic ---
+        for line in response.text.split('\n'):
+            line = line.strip()
+            # Ensure the line starts with a digit and contains a period to split
+            if line and line[0].isdigit() and '.' in line:
+                try:
+                    # Safely split and strip the chapter name
+                    chapter_name = line.split('.', 1)[1].strip()
+                    chapters.append(chapter_name)
+                    if len(chapters) == 10:
+                        break
+                except IndexError:
+                    # This will catch any lines that look like "1." but have nothing after.
+                    # We can just ignore these malformed lines.
+                    continue
+        
+        return chapters
+
+    except Exception as e:
+        # Log the error from the generation function itself
+        logging.error(f"Error calling Gemini API in generate_chapter_names: {e}", exc_info=True)
+        # Return an empty list to signal failure to the calling view
+        return []
 
 
 from concurrent.futures import ThreadPoolExecutor

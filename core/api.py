@@ -89,8 +89,8 @@ class DashboardAPI(APIView):
     def get(self, request):
         return JsonResponse({"message": "Dashboard API"}, status=status.HTTP_200_OK)
     
-    
-
+import logging   
+logger = logging.getLogger(__name__)
 
 class ChapterAPI(APIView):
     authentication_classes = [FirebaseAuthentication]
@@ -100,21 +100,26 @@ class ChapterAPI(APIView):
         try:
             topic = request.data.get('topic')
             grade = request.data.get('grade')
-            
-            # Validate inputs
+
             if not topic or not grade:
                 return JsonResponse({'error': 'Topic and grade are required'}, status=400)
-            
+
             # Generate chapters
             chapters = generate_chapter_names(topic, grade)
-            
+
+            # --- FIX 2: Add validation to ensure chapters were generated ---
+            if not chapters:
+                # This can happen if the LLM returns an empty or un-parseable response.
+                logger.error(f"Failed to generate chapters for topic='{topic}', grade='{grade}'. The LLM response might be empty or invalid.")
+                return JsonResponse({'error': 'Failed to generate chapters from the learning model. Please try a different topic or try again later.'}, status=500)
+
             # Save generation record
             generation = ChapterGeneration.objects.create(
                 user=request.user,
                 topic=topic,
                 grade=grade
             )
-            
+
             # Save chapters without resources
             for i, chapter_name in enumerate(chapters):
                 ChapterResource.objects.create(
@@ -122,7 +127,7 @@ class ChapterAPI(APIView):
                     name=chapter_name,
                     position=i
                 )
-            
+
             return JsonResponse({
                 'status': True,
                 'data': {
@@ -132,9 +137,12 @@ class ChapterAPI(APIView):
                     'chapters': chapters
                 }
             })
-            
+
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+            # --- FIX 3: Improve error logging ---
+            # Log the full traceback to your console/log file for easier debugging
+            logger.error(f"Internal Server Error in ChapterAPI: {e}", exc_info=True)
+            return JsonResponse({'error': 'An unexpected server error occurred. Please try again later.'}, status=500)
         
 @api_view(['GET'])
 def get_csrf_token(request):
